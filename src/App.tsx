@@ -31,7 +31,8 @@ import {
   FileCheck,
   ExternalLink,
   ChevronLeft,
-  Layers
+  Layers,
+  Database
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { BrowserMultiFormatReader } from '@zxing/browser';
@@ -1180,17 +1181,17 @@ export default function App() {
             </button>
           </nav>
 
-          {/* Quick actions, Google Sheet Sync & Role select */}
+          {/* Quick actions, Supabase Sync & Role select */}
           <div className="flex items-center space-x-2 sm:space-x-3">
             <button
               onClick={() => handleSyncSheet()}
               disabled={isSyncingSheet}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition cursor-pointer"
-              title="ดึง/อัปเดตข้อมูลจาก Google Sheet"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 transition cursor-pointer"
+              title="ดึง/อัปเดตข้อมูลเข้าสู่ฐานข้อมูล Supabase"
             >
-              <FileSpreadsheet className={`h-3.5 w-3.5 text-emerald-600 ${isSyncingSheet ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Google Sheet</span>
-              <span className="bg-emerald-200/60 text-emerald-900 px-1.5 py-0.2 rounded text-[11px] font-mono">
+              <Database className={`h-3.5 w-3.5 text-indigo-600 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">ฐานข้อมูล Supabase</span>
+              <span className="bg-indigo-200/60 text-indigo-900 px-1.5 py-0.2 rounded text-[11px] font-mono">
                 {totalBooksCount > 0 ? totalBooksCount.toLocaleString() : (sheetSyncInfo?.totalBooks?.toLocaleString() || '2,452')}
               </span>
             </button>
@@ -1326,9 +1327,9 @@ export default function App() {
               {/* Status & Results Counter */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-2 border-t border-slate-100 text-xs text-slate-500">
                 <div className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-800 rounded-lg font-semibold border border-emerald-200">
-                    <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />
-                    <span>ข้อมูลจาก Google Sheet</span>
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-800 rounded-lg font-semibold border border-indigo-200">
+                    <Database className="h-3.5 w-3.5 text-indigo-600" />
+                    <span>ฐานข้อมูล Supabase</span>
                   </span>
                   <span className="font-semibold text-slate-700">
                     พบหนังสือ {totalBooksCount > 0 ? totalBooksCount.toLocaleString() : books.length.toLocaleString()} เล่ม
@@ -2486,52 +2487,61 @@ export default function App() {
               </form>
             )}
 
-            {/* Google Sheets Live Integration Card */}
-            <div className="bg-gradient-to-br from-emerald-950 via-slate-900 to-slate-950 text-white p-6 sm:p-7 rounded-3xl shadow-xl space-y-6 border border-emerald-500/30">
+            {/* Supabase Database Live Integration Card */}
+            <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-slate-950 text-white p-6 sm:p-7 rounded-3xl shadow-xl space-y-6 border border-indigo-500/30">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-white/10">
                 <div className="flex items-center gap-3.5">
-                  <div className="p-3 bg-emerald-500/20 text-emerald-400 rounded-2xl border border-emerald-500/30">
-                    <FileSpreadsheet className="h-7 w-7" />
+                  <div className="p-3 bg-indigo-500/20 text-indigo-400 rounded-2xl border border-indigo-500/30">
+                    <Database className="h-7 w-7" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
-                      <h3 className="text-lg font-bold text-white tracking-tight">การเชื่อมต่อ Google Sheets (ระบบบรรณานุกรม MARC 21)</h3>
+                      <h3 className="text-lg font-bold text-white tracking-tight">ระบบฐานข้อมูล Supabase (คลังสารสนเทศห้องสมุด)</h3>
                       <span className="px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] font-bold rounded-full border border-emerald-400/30 flex items-center gap-1">
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" /> ออนไลน์
                       </span>
                     </div>
                     <p className="text-xs text-slate-300 mt-1">
-                      ดึงข้อมูลหนังสือจากสเปรดชีตต้นทางโดยตรง รองรับรูปแบบ MARC 21 เลขหมู่ DDC และสถานที่จัดเก็บบนชั้น
+                      แสดงผลและจัดเก็บข้อมูลจากฐานข้อมูล Supabase โดยตรง รองรับการสืบค้นความเร็วสูง การบันทึกรูปปก และบรรณานุกรม MARC 21
                     </p>
                   </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
                   <a
+                    href="https://prfmtippvgarzelaiaol.supabase.co"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3.5 py-2 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5 text-indigo-300" />
+                    <span>Supabase Dashboard</span>
+                  </a>
+                  <a
                     href="https://docs.google.com/spreadsheets/d/1IXKv6ZCq5AdUxZcKYsUz1IY3uH9qBxnMTTuYgeT7RRg/edit?gid=889338917#gid=889338917"
                     target="_blank"
                     rel="noreferrer"
                     className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition border border-white/15"
                   >
-                    <ExternalLink className="h-3.5 w-3.5 text-emerald-400" />
-                    <span>เปิดดู Google Sheet ต้นทาง</span>
+                    <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Google Sheet ต้นทาง</span>
                   </a>
                   <button
                     onClick={handleCleanDummyBooks}
                     disabled={isCleaningDummy}
                     className="px-3.5 py-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 border border-rose-400/30 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                    title="ลบข้อมูลตัวอย่าง Mock Data ที่ไม่มีใน Google Sheet ออกจากระบบ"
+                    title="ลบข้อมูลตัวอย่าง Mock Data ที่ไม่มีในฐานข้อมูล"
                   >
                     <Trash2 className="h-3.5 w-3.5 text-rose-300" />
-                    <span>{isCleaningDummy ? 'กำลังลบตัวอย่าง...' : 'ลบข้อมูลตัวอย่างที่ไม่มีใน Sheet'}</span>
+                    <span>{isCleaningDummy ? 'กำลังลบตัวอย่าง...' : 'ลบข้อมูลตัวอย่าง'}</span>
                   </button>
                   <button
                     onClick={() => handleSyncSheet()}
                     disabled={isSyncingSheet}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-md shadow-emerald-700/30 cursor-pointer disabled:opacity-50"
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-md shadow-indigo-700/30 cursor-pointer disabled:opacity-50"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
-                    <span>{isSyncingSheet ? 'กำลังดึงข้อมูล...' : 'ซิงค์ข้อมูลล่าสุดเดี๋ยวนี้ (Sync Now)'}</span>
+                    <span>{isSyncingSheet ? 'กำลังนำเข้า/ซิงค์...' : 'ซิงค์ข้อมูลเข้า Supabase (Sync Now)'}</span>
                   </button>
                 </div>
               </div>
@@ -2539,7 +2549,7 @@ export default function App() {
               {/* Status Stats Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
                 <div className="p-3.5 bg-white/5 rounded-xl border border-white/10 space-y-1">
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">จำนวนหนังสือที่ดึงมาแล้ว</span>
+                  <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">จำนวนหนังสือในระบบ</span>
                   <div className="text-xl font-black text-white flex items-baseline gap-1">
                     <span>{totalBooksCount > 0 ? totalBooksCount.toLocaleString() : (sheetSyncInfo?.totalBooks?.toLocaleString() || '2,452')}</span>
                     <span className="text-xs font-normal text-slate-400">เล่ม</span>
@@ -2553,9 +2563,9 @@ export default function App() {
                   </div>
                 </div>
                 <div className="p-3.5 bg-white/5 rounded-xl border border-white/10 space-y-1">
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">เวลาที่ซิงค์ล่าสุด</span>
-                  <div className="text-sm font-semibold text-emerald-300">
-                    {sheetSyncInfo?.lastSync ? new Date(sheetSyncInfo.lastSync).toLocaleString('th-TH') : 'ซิงค์เรียบร้อยแล้ว'}
+                  <span className="text-slate-400 block text-[10px] uppercase font-bold tracking-wider">เวลาที่อัปเดตล่าสุด</span>
+                  <div className="text-sm font-semibold text-indigo-300">
+                    {sheetSyncInfo?.lastSync ? new Date(sheetSyncInfo.lastSync).toLocaleString('th-TH') : 'เชื่อมต่อเรียบร้อยแล้ว'}
                   </div>
                 </div>
               </div>
@@ -2828,7 +2838,7 @@ export default function App() {
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-2">
                 <span className="text-xs text-slate-400 font-bold uppercase tracking-wide">สัดส่วนหนังสือในระบบ</span>
                 <p className="text-3xl font-black text-slate-900">{totalBooksCount > 0 ? totalBooksCount.toLocaleString() : (sheetSyncInfo?.totalBooks?.toLocaleString() || books.length.toLocaleString())} <span className="text-sm font-normal text-slate-400">เล่ม</span></p>
-                <div className="text-xs text-slate-500">ข้อมูลเชื่อมต่อตรงกับ Google Sheet (MARC 21)</div>
+                <div className="text-xs text-slate-500">ข้อมูลเชื่อมต่อตรงกับฐานข้อมูล Supabase (Cloud Database)</div>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-2">
                 <span className="text-xs text-slate-400 font-bold uppercase tracking-wide">การสแกนหน้าปกสะสม</span>

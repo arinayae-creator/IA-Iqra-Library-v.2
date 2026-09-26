@@ -578,7 +578,15 @@ async function mergeSupabaseCustomizations() {
       cachedBooks = cachedBooks.map(b => {
         if (customMap.has(b.id)) {
           updatedCount++;
-          return { ...b, ...customMap.get(b.id) };
+          const custom = customMap.get(b.id);
+          const merged = { ...b };
+          for (const [key, val] of Object.entries(custom)) {
+            // Only merge non-null, non-empty values so we never wipe existing titles or authors
+            if (val !== null && val !== undefined && val !== '') {
+              merged[key] = val;
+            }
+          }
+          return merged;
         }
         return b;
       });
@@ -617,7 +625,10 @@ async function initializeCache() {
     }
 
     if (allSupaBooks.length > 0) {
-      cachedBooks = allSupaBooks;
+      cachedBooks = allSupaBooks.map(b => ({
+        ...b,
+        source: 'ฐานข้อมูล Supabase'
+      }));
       
       // Load categories from Supabase
       const { data: supaCats } = await supabase.from('categories').select('*');
@@ -1034,6 +1045,7 @@ app.get('/api/books', async (req, res) => {
 
     let books: any[] = cachedBooks.map(b => ({
       ...b,
+      source: 'ฐานข้อมูล Supabase',
       accession_no: b.accession_no || b.barcode || ''
     }));
 
@@ -1568,6 +1580,40 @@ app.post('/api/books/auto-enrich-covers', async (req, res) => {
       updatedCount: 0, 
       totalCandidate: toEnrich.length, 
       message: `✨ เริ่มต้นระบบดึงภาพหน้าปกจริงเบื้องหลังสำหรับหนังสือทั้งหมดจำนวน ${toEnrich.length} รายการสำเร็จแล้ว! ภาพปกจะทยอยแสดงผลบนหน้าจอเมื่อค้นพบ` 
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Supabase live database status endpoint
+app.get('/api/supabase/status', async (req, res) => {
+  try {
+    const { count: booksCount, error: bErr } = await supabase.from('books').select('*', { count: 'exact', head: true });
+    const { count: catsCount, error: cErr } = await supabase.from('categories').select('*', { count: 'exact', head: true });
+    const { count: customCount } = await supabase.from('book_customizations').select('*', { count: 'exact', head: true });
+
+    let rlsBlocked = false;
+    let rlsMessage = '';
+    const testId = 'rls_ping_' + Date.now();
+    const testPing = await supabase.from('books').insert([{ id: testId, title: 'test_ping' }]).select();
+    if (testPing.error) {
+      rlsBlocked = true;
+      rlsMessage = testPing.error.message;
+    } else {
+      await supabase.from('books').delete().eq('id', testId);
+    }
+
+    res.json({
+      success: true,
+      connected: !bErr,
+      booksCount: booksCount ?? 0,
+      categoriesCount: catsCount ?? 0,
+      customCount: customCount ?? 0,
+      rlsBlocked,
+      rlsMessage,
+      serverMemoryCount: cachedBooks.length,
+      source: 'ฐานข้อมูล Supabase (Supabase DB)'
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
