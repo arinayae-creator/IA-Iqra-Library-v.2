@@ -2656,7 +2656,12 @@ if (process.env.NODE_ENV !== 'production') {
   });
 }
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server & WebSocket is running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
-});
+export default app;
+
+if (!process.env.VERCEL) {
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server & WebSocket is running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+  });
+}
+
