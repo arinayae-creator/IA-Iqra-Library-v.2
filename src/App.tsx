@@ -1238,6 +1238,41 @@ export default function App() {
     }
   };
 
+  // Compress & resize image to prevent Vercel 4.5MB payload limits and accelerate AI OCR
+  const resizeImageForAI = async (base64Str: string, maxDimension = 1200, quality = 0.82): Promise<string> => {
+    return new Promise((resolve) => {
+      try {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxDimension || height > maxDimension) {
+            if (width > height) {
+              height = Math.round((height * maxDimension) / width);
+              width = maxDimension;
+            } else {
+              width = Math.round((width * maxDimension) / height);
+              height = maxDimension;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+          } else {
+            resolve(base64Str);
+          }
+        };
+        img.onerror = () => resolve(base64Str);
+        img.src = base64Str;
+      } catch {
+        resolve(base64Str);
+      }
+    });
+  };
+
   // --- AI Cover Scanner Process Pipeline ---
   const processImageWithAI = async (base64Image: string) => {
     setScanResult(null);
@@ -1246,11 +1281,11 @@ export default function App() {
     
     // Simulate pipeline steps for engaging visual feedback
     const steps = [
-      { num: 1, delay: 600 },  // Preprocessing (Crop, Resize, Sharpen)
-      { num: 2, delay: 800 },  // Running Gemini OCR Engine
-      { num: 3, delay: 500 },  // Text Cleaning & Typo Correction
-      { num: 4, delay: 500 },  // Extracting Metadata (Title, Author)
-      { num: 5, delay: 400 },  // Fuzzy Searching Library Catalog Database
+      { num: 1, delay: 400 },  // Preprocessing (Crop, Resize, Sharpen)
+      { num: 2, delay: 600 },  // Running Gemini OCR Engine
+      { num: 3, delay: 400 },  // Text Cleaning & Typo Correction
+      { num: 4, delay: 400 },  // Extracting Metadata (Title, Author)
+      { num: 5, delay: 300 },  // Fuzzy Searching Library Catalog Database
     ];
 
     for (const step of steps) {
@@ -1259,26 +1294,35 @@ export default function App() {
     }
 
     try {
+      // Resize & compress to ~150KB for fast transfer & to comply with serverless payload limits
+      const compressedImage = await resizeImageForAI(base64Image, 1200, 0.82);
+
       let data: any = null;
       try {
         const res = await fetch('/api/scan-cover', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: base64Image })
+          body: JSON.stringify({ image: compressedImage })
         });
         const contentType = res.headers.get('content-type') || '';
         if (res.ok && contentType.includes('application/json')) {
           data = await res.json();
-        } else if (!res.ok) {
+        } else {
+          const rawErr = await res.text();
+          console.warn('API /api/scan-cover non-OK response:', res.status, rawErr);
+          if (res.status === 413) {
+            setCameraError('ขนาดรูปภาพใหญ่เกินไป กรุณาถ่ายภาพในระยะใกล้ขึ้นหรือเลือกภาพที่มีขนาดเล็กลง');
+            return;
+          }
           try {
-            const errData = await res.json();
-            if (errData && errData.error) {
-              setCameraError(errData.error);
+            const parsedErr = JSON.parse(rawErr);
+            if (parsedErr && parsedErr.error) {
+              setCameraError(parsedErr.error);
               return;
             }
           } catch {}
         }
-      } catch (networkErr) {
+      } catch (networkErr: any) {
         console.warn('Scan cover network error:', networkErr);
       }
 
