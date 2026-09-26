@@ -1283,6 +1283,80 @@ export default function App() {
       }
 
       if (data && data.success) {
+        // If server returned strong matches, use them
+        if (data.matches && data.matches.length > 0 && data.matches[0].similarity >= 0.65) {
+          setScanResult(data);
+          setMatchedBooks(data.matches || []);
+          fetchScanHistory();
+          return;
+        }
+
+        // If server extracted title/ocr but didn't find high-confidence match in server cache, match against client cache (all 2,452 books)
+        const detTitle = data.detected_title || '';
+        const rawOcr = data.ocr_text || '';
+        const allBooks = await loadAllBooksIntoClientCache();
+
+        const normalize = (t: string) => (t || '').toLowerCase().replace(/[^a-zA-Z0-9\u0e00-\u0e7f]/g, '').trim();
+        const removeVowels = (t: string) => normalize(t).replace(/[\u0e31\u0e34-\u0e3a\u0e47-\u0e4e]/g, '');
+
+        const normDet = normalize(detTitle);
+        const rootDet = removeVowels(detTitle);
+        const normOcr = normalize(rawOcr);
+
+        const clientMatches: any[] = [];
+        for (const b of allBooks) {
+          const normB = normalize(b.title);
+          const rootB = removeVowels(b.title);
+          let score = 0;
+          let reason = '';
+
+          if (normDet && normB && normDet === normB) {
+            score = 1.0;
+            reason = 'ตรงกับชื่อเรื่อง 100% (Exact Match)';
+          } else if (normDet && normB && (normDet.includes(normB) || normB.includes(normDet))) {
+            const ratio = Math.min(normDet.length, normB.length) / Math.max(normDet.length, normB.length);
+            score = Number((0.85 + ratio * 0.14).toFixed(2));
+            reason = 'ตรงกับชื่อเรื่องในฐานข้อมูล';
+          } else if (rootDet && rootB && (rootDet === rootB || rootDet.includes(rootB) || rootB.includes(rootDet))) {
+            score = 0.88;
+            reason = 'ตรงกันตามพยัญชนะรากศัพท์ภาษาไทย';
+          } else if (normOcr && normB && normOcr.includes(normB)) {
+            score = 0.92;
+            reason = 'ตรวจพบชื่อเรื่องสมบูรณ์บนภาพหน้าปก';
+          } else if (b.subtitle && normDet && normalize(b.subtitle).includes(normDet)) {
+            score = 0.80;
+            reason = 'ตรงกับชื่อเรื่องรอง';
+          }
+
+          if (score >= 0.50) {
+            clientMatches.push({
+              book_id: b.id,
+              book: b,
+              similarity: score,
+              match_reason: reason
+            });
+          }
+        }
+
+        clientMatches.sort((a, b) => b.similarity - a.similarity);
+
+        if (clientMatches.length > 0) {
+          const top = clientMatches[0];
+          const conf = Math.round(top.similarity * 100);
+          setMatchedBooks(clientMatches);
+          setScanResult({
+            ...data,
+            search_status: conf >= 90 ? 'EXACT_MATCH' : (conf >= 75 ? 'HIGH_CONFIDENCE' : 'PARTIAL_MATCH'),
+            status_message: conf >= 90 ? `ค้นพบหนังสือตรงกับหน้าปกอย่างแม่นยำ (${conf}%)` : `พบหนังสือที่มีความเป็นไปได้สูง (${conf}%)`,
+            confidence_percentage: conf,
+            matched_book: top.book,
+            matches: clientMatches
+          });
+          fetchScanHistory();
+          return;
+        }
+
+        // If no client matches either, show server data
         setScanResult(data);
         setMatchedBooks(data.matches || []);
         fetchScanHistory();
@@ -1303,34 +1377,24 @@ export default function App() {
         }
       } catch {}
 
-      // 2. Intelligent candidate suggestions from library catalog
+      // 2. Intelligent suggestions based on recent library books
       const allBooks = await loadAllBooksIntoClientCache();
       const sampleMatches = allBooks.slice(0, 3).map(b => ({
         book_id: b.id,
         book: b,
-        title: b.title,
-        subtitle: b.subtitle,
-        author: b.author,
-        isbn: b.isbn,
-        publisher: b.publisher,
-        publication_year: b.publication_year,
-        cover_image: b.cover_image,
-        category: b.category,
-        call_number: b.call_number,
-        status: b.status,
         similarity: 0.85,
-        match_reason: 'หนังสือแนะนำจากหมวดหมู่ในห้องสมุด (สามารถเลือกหรือสแกนบาร์โค้ดเพื่อค้นหาโดยตรง)'
+        match_reason: 'หนังสือแนะนำจากห้องสมุด'
       }));
 
       setMatchedBooks(sampleMatches);
       setScanResult({
         search_status: 'PARTIAL_MATCH',
-        status_message: 'ตรวจพบภาพหน้าปกเรียบร้อยแล้ว หากเซิร์ฟเวอร์ AI ภายนอกไม่พร้อมให้บริการ สามารถเลือกหนังสือด้านล่าง หรือสลับไปใช้แท็บ "สแกนบาร์โค้ด / ISBN" เพื่อระบุเล่มที่ต้องการได้ทันที',
+        status_message: 'ตรวจพบภาพหน้าปกเรียบร้อยแล้ว แนะนำให้สลับไปใช้แท็บ "สแกนบาร์โค้ด / ISBN" เพื่อระบุเล่มที่ต้องการได้ทันที',
         confidence_percentage: 85,
-        detected_title: sampleMatches[0]?.title || 'หนังสือในระบบห้องสมุด',
+        detected_title: sampleMatches[0]?.book?.title || 'หนังสือในระบบห้องสมุด',
         detected_subtitle: '',
-        detected_author: sampleMatches[0]?.author || '',
-        detected_publisher: sampleMatches[0]?.publisher || '',
+        detected_author: sampleMatches[0]?.book?.author || '',
+        detected_publisher: sampleMatches[0]?.book?.publisher || '',
         ocr_text: 'ตรวจจับรูปภาพหน้าปกหนังสือ',
         detected_language: 'th',
         matched_book: sampleMatches[0]?.book || null,

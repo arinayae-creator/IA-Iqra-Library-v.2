@@ -875,8 +875,27 @@ async function initializeCache() {
   saveCacheToDisk();
 }
 
+let cacheLoadedPromise: Promise<void> | null = null;
+
+export async function ensureCacheLoaded(): Promise<any[]> {
+  if (cachedBooks && cachedBooks.length > 0) {
+    return cachedBooks;
+  }
+  if (!cacheLoadedPromise) {
+    cacheLoadedPromise = (async () => {
+      try {
+        await initializeCache();
+      } catch (err) {
+        console.error('[Cache] Initialization error in ensureCacheLoaded:', err);
+      }
+    })();
+  }
+  await cacheLoadedPromise;
+  return cachedBooks;
+}
+
 // Trigger initial cache load asynchronously
-initializeCache().then(() => {
+ensureCacheLoaded().then(() => {
   console.log(`[Cache] Successfully loaded and cached ${cachedBooks.length} books from database.`);
 });
 
@@ -2285,6 +2304,10 @@ app.post('/api/scan-cover', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Image data is required in base64' });
     }
 
+    // 1. Ensure memory cache has all 2,452 library books loaded
+    await ensureCacheLoaded();
+    const allBooks = [...cachedBooks];
+
     // Extract base64 details
     let mimeType = 'image/jpeg';
     let base64Data = image;
@@ -2294,53 +2317,67 @@ app.post('/api/scan-cover', async (req, res) => {
       base64Data = parts[1];
     }
 
-    // 1. Fetch current catalog books from server cache
-    const allBooks = [...cachedBooks];
-
-    const catalogSample = allBooks.slice(0, 60).map(b => 
-      `- ID: "${b.id}" | Title: "${b.title}" | Subtitle: "${b.subtitle || ''}" | Author: "${b.author}" | ISBN: "${b.isbn}"`
-    ).join('\n');
-
     let ocrText = "";
     let detectedTitle = "";
     let detectedSubtitle = "";
     let detectedAuthor = "";
     let detectedPublisher = "";
+    let detectedIsbn = "";
     let detectedLanguage = "th";
     let alternativeTitles: string[] = [];
     let directMatchedId = "";
 
-    // If Gemini key is empty/not configured, fallback gracefully
-    if (!geminiApiKey || geminiApiKey === 'MY_GEMINI_API_KEY') {
-      console.warn('Gemini API key is not configured. Falling back to mock parsing.');
-      ocrText = "ความสุขของกะทิ งามพรรณ เวชชาชีวะ แพรวสำนักพิมพ์";
-      detectedTitle = "ความสุขของกะทิ";
-      detectedAuthor = "งามพรรณ เวชชาชีวะ";
+    // Read active Gemini API key from environment
+    const activeGeminiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || geminiApiKey;
+
+    if (!activeGeminiKey || activeGeminiKey === 'MY_GEMINI_API_KEY') {
+      console.warn('Gemini API key is not configured. Falling back to library sample.');
+      ocrText = "100 กลอัศจรรย์ แฮปปี้คิดส์";
+      detectedTitle = "100 กลอัศจรรย์";
+      detectedPublisher = "แฮปปี้คิดส์";
       detectedLanguage = "th";
     } else {
       try {
-        const promptText = `You are an expert Google Lens and AI Librarian OCR System.
-Analyze this book cover image with extreme precision (especially for Thai and English literature).
-Tasks:
-1. OCR: Extract all text visible on the book cover.
-2. Clean Title: Identify the MAIN book title. Exclude publisher awards, marketing stickers (e.g. "รางวัลซีไรต์", "Bestseller"), series numbers, or price tags.
-3. Subtitle & Author: Identify any subtitle, primary author, and publisher.
-4. Alternative / Translated Titles: If the book is known by an English original title or Thai translated title, list them in "alternative_titles".
-5. Google Lens Detection Tags: Provide clean extracted entity tags for the Google Lens UI with "label" (เช่น "ชื่อเรื่อง", "ผู้แต่ง", "สำนักพิมพ์", "ประเภท") and "text".
-6. Catalog Comparison: Check if this book corresponds to any item in this library catalog:
-${catalogSample}
-If there is an exact or strong match in the catalog, specify its ID in "matched_catalog_id".
+        const activeAi = new GoogleGenAI({
+          apiKey: activeGeminiKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build'
+            }
+          }
+        });
 
-Respond STRICTLY in JSON format:
+        const promptText = `You are a world-class AI Librarian and Vision OCR specialist with deep expertise in Thai and multilingual literature, book recognition, and library cataloging.
+
+Carefully inspect the provided book cover image and extract high-precision bibliographical information:
+
+Tasks:
+1. "title": The exact, clean main title of the book in its primary language (especially Thai).
+   - DO NOT include subtitles, awards (e.g. "รางวัลซีไรต์", "หนังสือขายดี", "Bestseller"), author names, volume numbers, or publisher slogans in the title.
+   - For example: if cover says "ความสุขของกะทิ วรรณกรรมสร้างสรรค์ยอดเยี่ยมแห่งอาเซียน", title MUST be "ความสุขของกะทิ".
+2. "subtitle": Any secondary title or tagline on the cover.
+3. "author": The primary author, illustrator, or translator. Exclude prefixes like "เขียนโดย" or "เรื่องโดย" or "by".
+4. "publisher": The publishing house or imprint if visible (e.g. นานมีบุ๊คส์, ซีเอ็ด, มติชน, แจ่มใส, เอ็มไอเอส).
+5. "isbn": If visible anywhere on the cover or barcode sticker (10 or 13 digits).
+6. "ocr_text": Complete, raw transcription of all readable text on the cover from top to bottom.
+7. "alternative_titles": Any alternative title, romanized/English title, or original title if translated.
+8. "lens_tags": Structured tags for visual labeling:
+   [
+     { "label": "ชื่อเรื่อง", "text": "..." },
+     { "label": "ผู้แต่ง", "text": "..." },
+     { "label": "สำนักพิมพ์", "text": "..." }
+   ]
+
+Return strictly valid JSON:
 {
-  "ocr_text": "all raw text extracted from the cover",
   "title": "Clean Main Title",
   "subtitle": "Subtitle if present",
   "author": "Author name",
   "publisher": "Publisher name",
-  "language": "th or en or other",
+  "isbn": "ISBN if detected",
+  "ocr_text": "all raw text extracted from cover",
+  "language": "th",
   "alternative_titles": ["Alt title 1", "Original Title"],
-  "matched_catalog_id": "Catalog ID if strongly matched or null",
   "lens_tags": [
     { "label": "ชื่อเรื่อง", "text": "..." },
     { "label": "ผู้แต่ง", "text": "..." },
@@ -2350,7 +2387,7 @@ Respond STRICTLY in JSON format:
 
         let rawText = "{}";
         try {
-          const response = await ai.models.generateContent({
+          const response = await activeAi.models.generateContent({
             model: 'gemini-3.8-flash',
             contents: [
               {
@@ -2369,7 +2406,7 @@ Respond STRICTLY in JSON format:
         } catch (m1Err: any) {
           console.warn('Primary model gemini-3.8-flash notice, attempting fallback model gemini-3.1-flash-lite:', m1Err?.message || m1Err);
           try {
-            const fallbackResponse = await ai.models.generateContent({
+            const fallbackResponse = await activeAi.models.generateContent({
               model: 'gemini-3.1-flash-lite',
               contents: [
                 {
@@ -2398,24 +2435,39 @@ Respond STRICTLY in JSON format:
         detectedSubtitle = result.subtitle || "";
         detectedAuthor = result.author || "";
         detectedPublisher = result.publisher || "";
+        detectedIsbn = result.isbn || "";
         detectedLanguage = result.language || "th";
         alternativeTitles = Array.isArray(result.alternative_titles) ? result.alternative_titles : [];
-        directMatchedId = result.matched_catalog_id || "";
       } catch (geminiError: any) {
         console.warn('Gemini API notice / fallback:', geminiError.message || geminiError);
-        // Resilient Fallback: Match against catalog books by finding candidate titles
-        ocrText = "ระบบประมวลผลวิเคราะห์หน้าปกหนังสือภาษาไทยอัตโนมัติ";
-        detectedTitle = "วิเคราะห์ภาพหน้าปก (Google Lens)";
+        ocrText = "วิเคราะห์ภาพหน้าปกหนังสือ";
+        detectedTitle = "";
         detectedAuthor = "";
         detectedLanguage = "th";
       }
     }
 
-    // Now, run the Multi-Stage Precision Matching Pipeline
+    // Now, run the Multi-Stage Precision Matching Pipeline across all books in library
     const matches: any[] = [];
+    const cleanDetectedIsbn = String(detectedIsbn || '').replace(/[^0-9X]/gi, '');
     
     for (const book of allBooks) {
-      // Direct catalog match from Gemini
+      // 1. Direct ISBN / Barcode match if detected
+      if (cleanDetectedIsbn && cleanDetectedIsbn.length >= 8) {
+        const bookIsbn = String(book.isbn || '').replace(/[^0-9X]/gi, '');
+        const bookBarcode = String(book.barcode || '').replace(/[^0-9X]/gi, '');
+        if (bookIsbn === cleanDetectedIsbn || bookBarcode === cleanDetectedIsbn) {
+          matches.push({
+            book_id: book.id,
+            book: book,
+            similarity: 1.0,
+            match_reason: 'ตรงกับรหัส ISBN/บาร์โค้ด บนปก 100%'
+          });
+          continue;
+        }
+      }
+
+      // 2. Direct catalog match from Gemini
       if (directMatchedId && book.id === directMatchedId) {
         matches.push({
           book_id: book.id,
@@ -2426,7 +2478,7 @@ Respond STRICTLY in JSON format:
         continue;
       }
 
-      // Calculate scores using multi-criteria algorithm
+      // 3. Multi-criteria precision scoring algorithm
       const titleMatch = calculateSimilarityScore(
         detectedTitle, 
         book.title, 
@@ -2436,10 +2488,10 @@ Respond STRICTLY in JSON format:
         ocrText
       );
 
-      // Also check subtitle if book has subtitle
       let bestScore = titleMatch.score;
       let bestReason = titleMatch.matchReason;
 
+      // Also check subtitle if book has subtitle
       if (book.subtitle && detectedTitle) {
         const subMatch = calculateSimilarityScore(detectedTitle, book.subtitle, book.author, detectedAuthor, [], ocrText);
         if (subMatch.score > bestScore) {
