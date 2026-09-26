@@ -1487,6 +1487,52 @@ async function searchInternetBookCover(title: string, author = '', publisher = '
   return null;
 }
 
+// General search cover endpoint
+app.post('/api/search-cover', async (req, res) => {
+  try {
+    const { bookId, title, author, publisher, isbn } = req.body || {};
+    let targetTitle = title || '';
+    let targetAuthor = author || '';
+    let targetPublisher = publisher || '';
+    let targetIsbn = isbn || '';
+
+    if (bookId && (!targetTitle || targetTitle.trim() === '')) {
+      const b = cachedBooks.find(item => item.id === bookId);
+      if (b) {
+        targetTitle = b.title || '';
+        targetAuthor = b.author || '';
+        targetPublisher = b.publisher || '';
+        targetIsbn = b.isbn || '';
+      }
+    }
+
+    const result = await searchInternetBookCover(targetTitle, targetAuthor, targetPublisher, targetIsbn);
+    if (result && result.url) {
+      if (bookId) {
+        const bookIdx = cachedBooks.findIndex(b => b.id === bookId);
+        const updatePayload = {
+          cover_image: result.url,
+          illustration: result.url,
+          cover_source: result.source,
+          updated_at: new Date().toISOString()
+        };
+        if (bookIdx !== -1) {
+          cachedBooks[bookIdx] = { ...cachedBooks[bookIdx], ...updatePayload };
+          saveCacheToDisk();
+        }
+        try {
+          await supabase.from('books').update(updatePayload).eq('id', bookId);
+          await supabase.from('book_customizations').upsert({ id: bookId, ...updatePayload });
+        } catch (sbErr) {}
+      }
+      return res.json({ success: true, cover_image: result.url, illustration: result.url, source: result.source, message: 'ค้นพบและบันทึกภาพหน้าปกจากอินเทอร์เน็ตสำเร็จ' });
+    }
+    res.json({ success: false, message: 'ไม่พบภาพหน้าปกที่ตรงกันจากอินเทอร์เน็ต' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Search internet for single book cover and persist in Firestore
 app.post('/api/books/:id/search-cover', async (req, res) => {
   try {

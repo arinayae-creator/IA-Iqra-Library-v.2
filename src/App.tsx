@@ -242,31 +242,79 @@ export default function App() {
     try {
       setEnrichingBookId(bookId);
       let coverFound: string | null = null;
+      let coverSource = 'internet_search';
 
+      const targetBook = books.find(b => b.id === bookId) || (selectedBookDetail && selectedBookDetail.id === bookId ? selectedBookDetail : null);
+
+      // 1. Try serverless endpoint /api/search-cover first
       try {
-        const res = await fetch(`/api/books/${bookId}/search-cover`, {
+        const res = await fetch('/api/search-cover', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            bookId, 
+            title: targetBook?.title || '',
+            author: targetBook?.author || '',
+            publisher: targetBook?.publisher || '',
+            isbn: targetBook?.isbn || ''
+          })
         });
         const contentType = res.headers.get('content-type') || '';
         if (res.ok && contentType.includes('application/json')) {
           const data = await res.json();
           if (data.success && data.cover_image) {
             coverFound = data.cover_image;
+            coverSource = data.source || 'internet_search';
           }
         }
       } catch (err) {
-        console.warn('API search-cover call note:', err);
+        console.warn('API /api/search-cover call note:', err);
       }
 
-      // Client-side fallback if API is unreachable
-      if (!coverFound) {
-        const book = books.find(b => b.id === bookId) || (selectedBookDetail && selectedBookDetail.id === bookId ? selectedBookDetail : null);
-        if (book) {
-          const cleanIsbn = String(book.isbn || '').replace(/[^0-9X]/gi, '');
-          if (cleanIsbn && cleanIsbn.length >= 10) {
-            coverFound = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-L.jpg`;
+      // 2. Client-side Google Books API direct search (Works directly from browser on Vercel without server!)
+      if (!coverFound && targetBook) {
+        try {
+          const cleanIsbn = String(targetBook.isbn || '').replace(/[^0-9X]/gi, '');
+          const cleanTitle = (targetBook.title || '').split('/')[0].split('=')[0].replace(/[^\u0E00-\u0E7Fa-zA-Z0-9\s]/g, ' ').trim();
+          const cleanAuthor = (targetBook.author || '').split('/')[0].replace(/[^\u0E00-\u0E7Fa-zA-Z0-9\s]/g, ' ').trim();
+
+          const queries = [];
+          if (cleanIsbn.length >= 10) queries.push(`isbn:${cleanIsbn}`);
+          if (cleanTitle) {
+            queries.push(`intitle:${cleanTitle}${cleanAuthor && cleanAuthor !== '-' ? `+inauthor:${cleanAuthor}` : ''}`);
+            queries.push(cleanTitle);
           }
+
+          for (const q of queries) {
+            const gbRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=3`);
+            if (gbRes.ok) {
+              const gbData = await gbRes.json();
+              if (gbData.items && gbData.items.length > 0) {
+                for (const item of gbData.items) {
+                  const imgLinks = item.volumeInfo?.imageLinks;
+                  if (imgLinks?.thumbnail || imgLinks?.smallThumbnail || imgLinks?.medium || imgLinks?.large) {
+                    let imgUrl = (imgLinks.large || imgLinks.medium || imgLinks.thumbnail || imgLinks.smallThumbnail).replace('http://', 'https://');
+                    imgUrl = imgUrl.replace('&edge=curl', '');
+                    coverFound = imgUrl;
+                    coverSource = 'google_books';
+                    break;
+                  }
+                }
+              }
+            }
+            if (coverFound) break;
+          }
+        } catch (gbErr) {
+          console.warn('Client Google Books search note:', gbErr);
+        }
+      }
+
+      // 3. Client-side OpenLibrary fallback
+      if (!coverFound && targetBook) {
+        const cleanIsbn = String(targetBook.isbn || '').replace(/[^0-9X]/gi, '');
+        if (cleanIsbn && cleanIsbn.length >= 10) {
+          coverFound = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-L.jpg`;
+          coverSource = 'open_library';
         }
       }
 
@@ -277,7 +325,7 @@ export default function App() {
           await supabase.from('books').update({
             cover_image: coverFound,
             illustration: coverFound,
-            cover_source: 'internet_search',
+            cover_source: coverSource,
             updated_at: nowIso
           }).eq('id', bookId);
 
@@ -285,18 +333,18 @@ export default function App() {
             id: bookId,
             cover_image: coverFound,
             illustration: coverFound,
-            cover_source: 'internet_search',
+            cover_source: coverSource,
             updated_at: nowIso
           }, { onConflict: 'id' });
         } catch {}
 
-        setBooks(prev => prev.map(b => b.id === bookId ? { ...b, cover_image: coverFound!, illustration: coverFound!, cover_source: 'internet_search' } : b));
+        setBooks(prev => prev.map(b => b.id === bookId ? { ...b, cover_image: coverFound!, illustration: coverFound!, cover_source: coverSource } : b));
         if (selectedBookDetail && selectedBookDetail.id === bookId) {
-          setSelectedBookDetail({ ...selectedBookDetail, cover_image: coverFound!, illustration: coverFound!, cover_source: 'internet_search' });
+          setSelectedBookDetail({ ...selectedBookDetail, cover_image: coverFound!, illustration: coverFound!, cover_source: coverSource });
         }
         alert('✨ ดึงภาพหน้าปกจริงจากอินเทอร์เน็ตและบันทึกลงระบบสำเร็จแล้ว!');
       } else {
-        alert('ไม่พบภาพหน้าปกจากอินเทอร์เน็ต สามารถใช้ปุ่ม "แก้ไขภาพปก" เพื่อใส่ลิงก์รูปภาพโดยตรงได้ครับ');
+        alert('ไม่พบภาพหน้าปกที่ตรงกันจากอินเทอร์เน็ต สามารถใช้ปุ่ม "แก้ไขภาพปก" เพื่อใส่ลิงก์รูปภาพโดยตรงได้ครับ');
       }
     } catch (e: any) {
       alert('เกิดข้อผิดพลาดในการค้นหาปก: ' + e.message);
@@ -392,37 +440,87 @@ export default function App() {
       }
 
       if (!apiSucceeded) {
-        // Direct Supabase fallback for Vercel/standalone environment
+        // Direct Multi-strategy fallback for Vercel/standalone environment
         const allBooks = await loadAllBooksIntoClientCache();
         const candidateBooks = allBooks.filter(b => {
-          const isbn = String(b.isbn || '').replace(/[^0-9X]/gi, '');
-          return isbn.length >= 10 && (!b.cover_image || b.cover_image.includes('unsplash.com'));
-        }).slice(0, 15);
+          return !b.cover_image || b.cover_image.includes('unsplash.com') || b.cover_image.includes('placeholder');
+        }).slice(0, 10);
 
         if (candidateBooks.length === 0) {
-          alert('✨ หนังสือในระบบที่มีรหัส ISBN มีภาพหน้าปกเรียบร้อยแล้ว!');
+          alert('✨ หนังสือทั้งหมดในระบบมีภาพหน้าปกเรียบร้อยแล้ว!');
           return;
         }
 
         let updated = 0;
         for (const b of candidateBooks) {
+          let foundCover: string | null = null;
+          let foundSource = 'google_books';
           const cleanIsbn = String(b.isbn || '').replace(/[^0-9X]/gi, '');
-          const coverUrl = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-M.jpg?default=https%3A%2F%2Fimages.unsplash.com%2Fphoto-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600`;
+          const cleanTitle = (b.title || '').split('/')[0].split('=')[0].replace(/[^\u0E00-\u0E7Fa-zA-Z0-9\s]/g, ' ').trim();
+          const cleanAuthor = (b.author || '').split('/')[0].replace(/[^\u0E00-\u0E7Fa-zA-Z0-9\s]/g, ' ').trim();
+
+          // 1. Google Books API
           try {
-            const nowIso = new Date().toISOString();
-            await supabase.from('books').update({
-              cover_image: coverUrl,
-              illustration: coverUrl,
-              cover_source: 'openlibrary',
-              updated_at: nowIso
-            }).eq('id', b.id);
-            updated++;
+            const queries = [];
+            if (cleanIsbn.length >= 10) queries.push(`isbn:${cleanIsbn}`);
+            if (cleanTitle) queries.push(`intitle:${cleanTitle}${cleanAuthor && cleanAuthor !== '-' ? `+inauthor:${cleanAuthor}` : ''}`);
+
+            for (const q of queries) {
+              const gbRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=2`);
+              if (gbRes.ok) {
+                const gbData = await gbRes.json();
+                if (gbData.items && gbData.items.length > 0) {
+                  for (const item of gbData.items) {
+                    const imgLinks = item.volumeInfo?.imageLinks;
+                    if (imgLinks?.thumbnail || imgLinks?.smallThumbnail || imgLinks?.medium || imgLinks?.large) {
+                      let imgUrl = (imgLinks.large || imgLinks.medium || imgLinks.thumbnail || imgLinks.smallThumbnail).replace('http://', 'https://');
+                      imgUrl = imgUrl.replace('&edge=curl', '');
+                      foundCover = imgUrl;
+                      foundSource = 'google_books';
+                      break;
+                    }
+                  }
+                }
+              }
+              if (foundCover) break;
+            }
           } catch {}
+
+          // 2. OpenLibrary Fallback
+          if (!foundCover && cleanIsbn.length >= 10) {
+            foundCover = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-L.jpg`;
+            foundSource = 'open_library';
+          }
+
+          if (foundCover) {
+            try {
+              const nowIso = new Date().toISOString();
+              await supabase.from('books').update({
+                cover_image: foundCover,
+                illustration: foundCover,
+                cover_source: foundSource,
+                updated_at: nowIso
+              }).eq('id', b.id);
+
+              await supabase.from('book_customizations').upsert({
+                id: b.id,
+                cover_image: foundCover,
+                illustration: foundCover,
+                cover_source: foundSource,
+                updated_at: nowIso
+              }, { onConflict: 'id' });
+              updated++;
+            } catch {}
+          }
         }
 
         clientAllBooksRef.current = []; // invalidate cache to re-fetch
         fetchBooks(currentPage);
-        alert(`✨ ค้นหาและอัปเดตรูปภาพหน้าปกจากอินเทอร์เน็ตสำเร็จจำนวน ${updated} เล่มเรียบร้อยแล้ว!`);
+        if (updated > 0) {
+          alert(`✨ ค้นหาและอัปเดตรูปภาพหน้าปกจากอินเทอร์เน็ตสำเร็จจำนวน ${updated} เล่มเรียบร้อยแล้ว!`);
+        } else {
+          alert('ไม่พบรูปภาพหน้าปกใหม่เพิ่มเติมจากอินเทอร์เน็ตสำหรับชุดหนังสือนี้');
+        }
       }
     } catch (e: any) {
       alert('เกิดข้อผิดพลาด: ' + e.message);
