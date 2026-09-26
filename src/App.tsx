@@ -32,10 +32,13 @@ import {
   ExternalLink,
   ChevronLeft,
   Layers,
-  Database
+  Database,
+  Radio,
+  Zap
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { supabase } from '../supabaseClient';
 
 // Interfaces based on Database Schema
 interface Book {
@@ -112,6 +115,11 @@ export default function App() {
   // Detail Modal
   const [selectedBookDetail, setSelectedBookDetail] = useState<Book | null>(null);
   const [isSavingCover, setIsSavingCover] = useState<boolean>(false);
+
+  // Real-time states
+  const [isRealtimeConnected, setIsRealtimeConnected] = useState<boolean>(true);
+  const [realtimeNotice, setRealtimeNotice] = useState<string | null>(null);
+  const [lastRealtimeEventTime, setLastRealtimeEventTime] = useState<string>(new Date().toLocaleTimeString('th-TH'));
 
   // Admin states
   const [editingBook, setEditingBook] = useState<Book | null>(null);
@@ -380,6 +388,130 @@ export default function App() {
     }, 300);
     return () => clearTimeout(delayDebounce);
   }, [searchQuery, selectedCategory, selectedPublisher, sortBy]);
+
+  // Real-time synchronization effect (WebSocket + Supabase Realtime)
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+    let isMounted = true;
+
+    const connectWs = () => {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          if (!isMounted) return;
+          setIsRealtimeConnected(true);
+          console.log('[WebSocket] Real-time connected!');
+        };
+
+        ws.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const data = JSON.parse(event.data);
+            setLastRealtimeEventTime(new Date().toLocaleTimeString('th-TH'));
+
+            if (data.type === 'BOOK_UPDATED' && data.payload) {
+              const updated = data.payload as Book;
+              setBooks(prev => prev.map(b => b.id === updated.id ? { ...b, ...updated } : b));
+              setSelectedBookDetail(prev => prev && prev.id === updated.id ? { ...prev, ...updated } : prev);
+              setRealtimeNotice(`⚡ อัปเดตข้อมูลแบบเรียลไทม์: "${updated.title || updated.id}"`);
+            } else if (data.type === 'BOOK_CREATED' && data.payload) {
+              const newBook = data.payload as Book;
+              setBooks(prev => [newBook, ...prev.filter(b => b.id !== newBook.id)]);
+              setTotalBooksCount(prev => prev + 1);
+              setRealtimeNotice(`✨ เพิ่มหนังสือใหม่แบบเรียลไทม์: "${newBook.title || newBook.id}"`);
+            } else if (data.type === 'BOOK_DELETED' && data.payload) {
+              const delId = data.payload.id;
+              setBooks(prev => prev.filter(b => b.id !== delId));
+              setTotalBooksCount(prev => Math.max(0, prev - 1));
+              setRealtimeNotice(`🗑️ ลบหนังสือออกจากฐานข้อมูลเรียบร้อยแล้ว`);
+            } else if (data.type === 'DATABASE_SYNCED' || data.type === 'BATCH_BOOKS_ADDED') {
+              setRealtimeNotice(`🔄 ฐานข้อมูลซิงค์ข้อมูลล่าสุดเรียบร้อยแล้ว`);
+              fetchBooks(currentPage);
+            }
+          } catch (err) {
+            console.error('[WebSocket] parse error:', err);
+          }
+        };
+
+        ws.onclose = () => {
+          if (!isMounted) return;
+          setIsRealtimeConnected(false);
+          reconnectTimeout = setTimeout(connectWs, 3000);
+        };
+
+        ws.onerror = () => {
+          if (!isMounted) return;
+          setIsRealtimeConnected(false);
+        };
+      } catch (err) {
+        reconnectTimeout = setTimeout(connectWs, 3000);
+      }
+    };
+
+    connectWs();
+
+    // Subscribe to Supabase Postgres Changes directly on client
+    let supabaseChannel: any = null;
+    try {
+      supabaseChannel = supabase
+        .channel('client-realtime-books')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'books' }, (payload: any) => {
+          if (!isMounted) return;
+          setLastRealtimeEventTime(new Date().toLocaleTimeString('th-TH'));
+          if (payload.eventType === 'UPDATE' && payload.new) {
+            const updated = payload.new as Book;
+            setBooks(prev => prev.map(b => b.id === updated.id ? { ...b, ...updated } : b));
+            setSelectedBookDetail(prev => prev && prev.id === updated.id ? { ...prev, ...updated } : prev);
+            setRealtimeNotice(`⚡ อัปเดตข้อมูลแบบเรียลไทม์จากฐานข้อมูล Supabase: "${updated.title || updated.id}"`);
+          } else if (payload.eventType === 'INSERT' && payload.new) {
+            const newBook = payload.new as Book;
+            setBooks(prev => [newBook, ...prev.filter(b => b.id !== newBook.id)]);
+            setTotalBooksCount(prev => prev + 1);
+            setRealtimeNotice(`✨ มีการเพิ่มหนังสือใหม่ใน Supabase: "${newBook.title || newBook.id}"`);
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            const oldId = (payload.old as any).id;
+            setBooks(prev => prev.filter(b => b.id !== oldId));
+            setTotalBooksCount(prev => Math.max(0, prev - 1));
+          }
+        })
+        .subscribe((status: string) => {
+          if (status === 'SUBSCRIBED' && isMounted) {
+            setIsRealtimeConnected(true);
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            // If postgres_changes replication is not enabled in Supabase, rely seamlessly on our /ws WebSocket
+            if (supabaseChannel) {
+              try {
+                supabase.removeChannel(supabaseChannel);
+              } catch {}
+              supabaseChannel = null;
+            }
+          }
+        });
+    } catch (e) {
+      console.warn('[Supabase Client Realtime Note]:', e);
+    }
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (ws) ws.close();
+      if (supabaseChannel) supabase.removeChannel(supabaseChannel);
+    };
+  }, []);
+
+  // Auto-dismiss real-time toast
+  useEffect(() => {
+    if (realtimeNotice) {
+      const timer = setTimeout(() => {
+        setRealtimeNotice(null);
+      }, 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [realtimeNotice]);
 
   const handlePageChange = (newPage: number) => {
     setCurrentPage(newPage);
@@ -1183,6 +1315,26 @@ export default function App() {
 
           {/* Quick actions, Supabase Sync & Role select */}
           <div className="flex items-center space-x-2 sm:space-x-3">
+            {/* Real-time Indicator Pill */}
+            <div 
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                isRealtimeConnected 
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                  : 'bg-amber-50 text-amber-800 border-amber-200'
+              }`}
+              title={isRealtimeConnected ? `เชื่อมต่อฐานข้อมูล Supabase แบบเรียลไทม์ (อัปเดตล่าสุด ${lastRealtimeEventTime})` : 'กำลังเชื่อมต่อใหม่...'}
+            >
+              <span className="relative flex h-2 w-2">
+                {isRealtimeConnected && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                )}
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${isRealtimeConnected ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+              </span>
+              <span className="hidden md:inline font-bold">
+                {isRealtimeConnected ? 'เรียลไทม์ (Live)' : 'เชื่อมต่อใหม่...'}
+              </span>
+            </div>
+
             <button
               onClick={() => handleSyncSheet()}
               disabled={isSyncingSheet}
@@ -3229,6 +3381,23 @@ export default function App() {
               </div>
             </div>
           </form>
+        </div>
+      )}
+      {/* Real-time Floating Notification Toast */}
+      {realtimeNotice && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 px-4 py-3 bg-slate-900/95 text-white rounded-2xl shadow-2xl border border-emerald-500/40 backdrop-blur-md transition-all duration-300">
+          <span className="flex h-2.5 w-2.5 relative shrink-0">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+          </span>
+          <span className="text-xs font-semibold tracking-wide text-slate-100">{realtimeNotice}</span>
+          <button 
+            type="button"
+            onClick={() => setRealtimeNotice(null)} 
+            className="text-slate-400 hover:text-white text-xs ml-2 cursor-pointer font-bold px-1.5 py-0.5 rounded hover:bg-white/10"
+          >
+            ✕
+          </button>
         </div>
       )}
     </div>

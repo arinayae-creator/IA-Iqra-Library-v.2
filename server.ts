@@ -1,5 +1,7 @@
 import { supabase } from './supabaseClient';
 import express from 'express';
+import http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
@@ -11,6 +13,46 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const app = express();
+app.use(express.json({ limit: '50mb' }));
+
+// Create HTTP server & WebSocket server for real-time syncing
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+export function broadcastRealtime(event: { type: string; payload: any }) {
+  try {
+    const msg = JSON.stringify(event);
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(msg);
+      }
+    });
+  } catch (err) {
+    console.error('[WebSocket Broadcast Error]:', err);
+  }
+}
+
+wss.on('connection', (ws) => {
+  console.log('[WebSocket] Real-time client connected! Total clients:', wss.clients.size);
+  ws.send(JSON.stringify({
+    type: 'CONNECTED',
+    payload: {
+      message: 'Real-time connected to Supabase Database',
+      timestamp: new Date().toISOString()
+    }
+  }));
+
+  ws.on('message', (data) => {
+    try {
+      const parsed = JSON.parse(data.toString());
+      if (parsed.type === 'PING') {
+        ws.send(JSON.stringify({ type: 'PONG', timestamp: Date.now() }));
+      }
+    } catch {}
+  });
+});
 
 // Test Supabase connection
 async function testSupabaseConnection() {
@@ -27,8 +69,6 @@ async function testSupabaseConnection() {
 }
 testSupabaseConnection();
 
-const app = express();
-app.use(express.json({ limit: '50mb' }));
 
 // Initialize Gemini API
 const geminiApiKey = process.env.GEMINI_API_KEY || '';
@@ -836,7 +876,10 @@ async function initializeCache() {
 }
 
 // Trigger initial cache load asynchronously
-initializeCache();
+initializeCache().then(() => {
+  console.log(`[Cache] Successfully loaded and cached ${cachedBooks.length} books from database.`);
+});
+
 
 // --- Intelligent Matching Engine Functions ---
 
@@ -1799,6 +1842,9 @@ app.post('/api/sheets/sync', async (req, res) => {
     
     saveCacheToDisk();
 
+    // Broadcast real-time database sync
+    broadcastRealtime({ type: 'DATABASE_SYNCED', payload: { totalBooks: booksToSave.length, categories: categoriesSet.size } });
+
     // Respond immediately!
     res.json({ 
       success: true, 
@@ -1941,6 +1987,9 @@ app.post('/api/books', async (req, res) => {
       console.warn('Backup write to Supabase failed for new book:', sbErr);
     }
 
+    // Broadcast real-time book creation
+    broadcastRealtime({ type: 'BOOK_CREATED', payload: data });
+
     res.status(201).json({ success: true, id: bookId, book: data });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -2024,6 +2073,9 @@ app.post('/api/books/batch', async (req, res) => {
     setTimeout(async () => {
       await saveBatchBooksToSupabase(batchBooks);
     }, 100);
+
+    // Broadcast real-time batch add
+    broadcastRealtime({ type: 'BATCH_BOOKS_ADDED', payload: { count: batchBooks.length } });
 
     res.json({ success: true, ...results });
   } catch (err: any) {
@@ -2109,6 +2161,9 @@ app.put('/api/books/:id', async (req, res) => {
       console.warn('Update in Supabase failed for book:', sbErr);
     }
 
+    // Broadcast real-time book update to all clients
+    broadcastRealtime({ type: 'BOOK_UPDATED', payload: updatedBook });
+
     res.json({ success: true, id: bookId, book: updatedBook });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -2135,6 +2190,9 @@ app.delete('/api/books/:id', async (req, res) => {
     } catch (sbErr) {
       console.warn('Backup deletion in Supabase failed for book:', sbErr);
     }
+
+    // Broadcast real-time book deletion to all clients
+    broadcastRealtime({ type: 'BOOK_DELETED', payload: { id: bookId } });
 
     res.json({ success: true, message: 'Book deleted successfully' });
   } catch (err: any) {
@@ -2599,6 +2657,6 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server is running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server & WebSocket is running on http://0.0.0.0:${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
 });
