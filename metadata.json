@@ -1,0 +1,6 @@
+{
+  "name": "IAB IQRA LIBRARY",
+  "description": "ระบบสืบค้นและแสดงรายการหนังสือห้องสมุดอัจฉริยะด้วย AI สแกนรูปภาพหน้าปก และระบบบาร์โค้ด - IAB IQRA LIBRARY",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

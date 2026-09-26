@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "Book": {
+      "title": "Book",
+      "description": "Library book entity with bibliographic details",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "description": "Title of the book" },
+        "subtitle": { "type": "string", "description": "Subtitle of the book" },
+        "author": { "type": "string", "description": "Author name" },
+        "co_authors": { "type": "string", "description": "Co-authors or translators" },
+        "isbn": { "type": "string", "description": "ISBN number" },
+        "publisher": { "type": "string", "description": "Publisher name" },
+        "publication_place": { "type": "string", "description": "Place of publication" },
+        "publication_year": { "type": "string", "description": "Year of publication" },
+        "edition": { "type": "string", "description": "Edition" },
+        "pages": { "type": "string", "description": "Number of pages" },
+        "language": { "type": "string", "description": "Language" },
+        "category": { "type": "string", "description": "Category" },
+        "subject": { "type": "string", "description": "Subject classification" },
+        "keywords": { "type": "string", "description": "Keywords" },
+        "call_number": { "type": "string", "description": "Library call number" },
+        "ddc": { "type": "string", "description": "Dewey Decimal Classification" },
+        "barcode": { "type": "string", "description": "Barcode number" },
+        "cover_image": { "type": "string", "description": "Cover image URL" },
+        "description": { "type": "string", "description": "Book summary description" },
+        "status": { "type": "string", "enum": ["พร้อมให้บริการ", "ถูกยืมแล้ว", "ปรับปรุง"] },
+        "created_at": { "type": "string", "description": "Creation timestamp" },
+        "updated_at": { "type": "string", "description": "Update timestamp" }
+      },
+      "required": ["title", "author", "isbn", "publisher", "call_number"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Library book category classification",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of category" },
+        "description": { "type": "string", "description": "Category description" }
+      },
+      "required": ["name"]
+    },
+    "ScanHistory": {
+      "title": "ScanHistory",
+      "description": "Historical record of AI book cover scans",
+      "type": "object",
+      "properties": {
+        "image_url": { "type": "string", "description": "Cover image reference" },
+        "extracted_text": { "type": "string", "description": "Raw text extracted from OCR" },
+        "detected_title": { "type": "string", "description": "Book title detected by AI" },
+        "detected_author": { "type": "string", "description": "Book author detected by AI" },
+        "matched_book_id": { "type": "string", "description": "ID of matched book if found" },
+        "similarity_score": { "type": "number", "description": "Similarity score between 0 and 1" },
+        "created_at": { "type": "string", "description": "Scan timestamp" }
+      },
+      "required": ["extracted_text", "detected_title", "created_at"]
+    }
+  },
+  "firestore": {
+    "/books/{bookId}": {
+      "schema": "Book",
+      "description": "Collection of library catalog books"
+    },
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Collection of book categories"
+    },
+    "/scan_history/{historyId}": {
+      "schema": "ScanHistory",
+      "description": "Collection of scan history entries"
+    }
+  }
+}
