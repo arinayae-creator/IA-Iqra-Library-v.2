@@ -1317,17 +1317,25 @@ export default function App() {
           try {
             const parsedErr = JSON.parse(rawErr);
             if (parsedErr && parsedErr.error) {
-              setCameraError(parsedErr.error);
+              setCameraError(`ข้อผิดพลาดจาก AI OCR: ${parsedErr.error}`);
               return;
             }
           } catch {}
+          setCameraError(`ไม่สามารถตรวจข้อความ OCR ได้ (เซิร์ฟเวอร์ตอบกลับรหัส ${res.status}): โปรดตรวจสอบว่าได้อัปเดตไฟล์ /api/scan-cover.ts บน Vercel และตั้งค่า GEMINI_API_KEY แล้ว`);
+          return;
         }
       } catch (networkErr: any) {
         console.warn('Scan cover network error:', networkErr);
+        setCameraError('ไม่สามารถเชื่อมต่อระบบวิเคราะห์ AI ได้ โปรดตรวจสอบการเชื่อมต่ออินเทอร์เน็ต');
+        return;
       }
 
-      if (data && data.success) {
-        // If server returned strong matches, use them
+      if (!data || !data.success) {
+        setCameraError(data?.error || 'ไม่สามารถตรวจจับข้อความ OCR บนหน้าปกได้ โปรดลองถ่ายภาพในมุมที่สว่างและชัดเจนขึ้น');
+        return;
+      }
+
+      // If server returned strong matches, use them
         if (data.matches && data.matches.length > 0 && data.matches[0].similarity >= 0.65) {
           setScanResult(data);
           setMatchedBooks(data.matches || []);
@@ -1400,54 +1408,14 @@ export default function App() {
           return;
         }
 
-        // If no client matches either, show server data
+        // If no client matches either, show server data with actual detected OCR
         setScanResult(data);
         setMatchedBooks(data.matches || []);
         fetchScanHistory();
         return;
-      }
-
-      // Client-side fallback if server-side AI is unreachable:
-      // 1. Try in-browser barcode decoding from the uploaded cover image
-      try {
-        const img = new Image();
-        img.src = base64Image;
-        await new Promise((resolve) => { img.onload = resolve; });
-        const codeReader = new BrowserMultiFormatReader();
-        const barcodeResult = await codeReader.decodeFromImageElement(img);
-        if (barcodeResult && barcodeResult.getText()) {
-          decodeBarcodeFromImage(base64Image);
-          return;
-        }
-      } catch {}
-
-      // 2. Intelligent suggestions based on recent library books
-      const allBooks = await loadAllBooksIntoClientCache();
-      const sampleMatches = allBooks.slice(0, 3).map(b => ({
-        book_id: b.id,
-        book: b,
-        similarity: 0.85,
-        match_reason: 'หนังสือแนะนำจากห้องสมุด'
-      }));
-
-      setMatchedBooks(sampleMatches);
-      setScanResult({
-        search_status: 'PARTIAL_MATCH',
-        status_message: 'ตรวจพบภาพหน้าปกเรียบร้อยแล้ว แนะนำให้สลับไปใช้แท็บ "สแกนบาร์โค้ด / ISBN" เพื่อระบุเล่มที่ต้องการได้ทันที',
-        confidence_percentage: 85,
-        detected_title: sampleMatches[0]?.book?.title || 'หนังสือในระบบห้องสมุด',
-        detected_subtitle: '',
-        detected_author: sampleMatches[0]?.book?.author || '',
-        detected_publisher: sampleMatches[0]?.book?.publisher || '',
-        ocr_text: 'ตรวจจับรูปภาพหน้าปกหนังสือ',
-        detected_language: 'th',
-        matched_book: sampleMatches[0]?.book || null,
-        matches: sampleMatches
-      });
-      setCameraError('');
     } catch (err: any) {
       console.error(err);
-      setCameraError('ไม่สามารถติดต่อเซิร์ฟเวอร์ AI ได้ แนะนำให้สลับไปใช้แท็บ "สแกนบาร์โค้ด / ISBN" เพื่อสแกนได้ทันทีโดยไม่ต้องเชื่อมต่อเซิร์ฟเวอร์');
+      setCameraError(err.message || 'ไม่สามารถติดต่อเซิร์ฟเวอร์ AI ได้ แนะนำให้สลับไปใช้แท็บ "สแกนบาร์โค้ด / ISBN"');
     } finally {
       setScanningStep(0);
     }

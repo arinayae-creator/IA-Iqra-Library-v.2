@@ -27,7 +27,13 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const { image } = req.body || {};
+    let body = req.body;
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch {}
+    }
+    const { image } = body || {};
     if (!image) {
       return res.status(400).json({ success: false, error: 'Image data is required in base64' });
     }
