@@ -178,6 +178,34 @@ export default function App() {
     fetchSheetInfo();
   }, []);
 
+  // Client-side in-memory cache for standalone/Vercel environments
+  const clientAllBooksRef = useRef<Book[]>([]);
+
+  const loadAllBooksIntoClientCache = async (): Promise<Book[]> => {
+    if (clientAllBooksRef.current.length > 0) {
+      return clientAllBooksRef.current;
+    }
+    try {
+      const [r1, r2, r3] = await Promise.all([
+        supabase.from('books').select('*').range(0, 999),
+        supabase.from('books').select('*').range(1000, 1999),
+        supabase.from('books').select('*').range(2000, 2999)
+      ]);
+      const combined = [
+        ...(r1.data || []),
+        ...(r2.data || []),
+        ...(r3.data || [])
+      ] as Book[];
+      if (combined.length > 0) {
+        clientAllBooksRef.current = combined;
+      }
+      return combined;
+    } catch (e) {
+      console.error('Failed to load books from Supabase:', e);
+      return [];
+    }
+  };
+
   const fetchPublishers = async () => {
     try {
       try {
@@ -192,16 +220,17 @@ export default function App() {
         }
       } catch {}
 
-      // Direct Supabase query fallback (e.g. for Vercel deployment)
-      const { data, error } = await supabase
-        .from('books')
-        .select('publisher')
-        .not('publisher', 'is', null)
-        .neq('publisher', '')
-        .limit(2500);
-
-      if (!error && data) {
-        const pubs = Array.from(new Set(data.map((d: any) => d.publisher).filter((p: any) => p && p !== '-'))).sort() as string[];
+      // Fallback: derive all 321 publishers from all 2,452 books
+      const allBooks = await loadAllBooksIntoClientCache();
+      const pubSet = new Set<string>();
+      allBooks.forEach(b => {
+        const p = (b.publisher || '').trim();
+        if (p && p !== 'ไม่ระบุสำนักพิมพ์' && p !== '-') {
+          pubSet.add(p);
+        }
+      });
+      const pubs = Array.from(pubSet).sort((a, b) => a.localeCompare(b, 'th'));
+      if (pubs.length > 0) {
         setPublishers(pubs);
       }
     } catch (e) {
@@ -453,42 +482,55 @@ export default function App() {
 
       // 2. Direct Supabase query fallback (e.g. for Vercel or when API is unreachable)
       if (!loadedFromApi) {
-        console.log('[Supabase Direct] Fetching books directly from Supabase database...');
-        let query = supabase.from('books').select('*', { count: 'exact' });
+        console.log('[Supabase Direct] Using client-side memory engine from Supabase database...');
+        const allBooks = await loadAllBooksIntoClientCache();
+        let filtered = [...allBooks];
 
         if (selectedCategory) {
-          query = query.eq('category', selectedCategory);
+          filtered = filtered.filter(b => b.category === selectedCategory);
         }
         if (selectedPublisher) {
-          query = query.eq('publisher', selectedPublisher);
+          filtered = filtered.filter(b => b.publisher === selectedPublisher);
         }
         if (searchQuery && searchQuery.trim()) {
-          const q = searchQuery.trim();
-          query = query.or(`title.ilike.%${q}%,author.ilike.%${q}%,isbn.ilike.%${q}%,barcode.ilike.%${q}%,accession_no.ilike.%${q}%,publisher.ilike.%${q}%,category.ilike.%${q}%,call_number.ilike.%${q}%`);
+          const q = searchQuery.trim().toLowerCase();
+          filtered = filtered.filter(b => 
+            (b.title && b.title.toLowerCase().includes(q)) || 
+            (b.subtitle && b.subtitle.toLowerCase().includes(q)) ||
+            (b.author && b.author.toLowerCase().includes(q)) || 
+            (b.isbn && b.isbn.toLowerCase().includes(q)) || 
+            (b.barcode && b.barcode.toLowerCase().includes(q)) ||
+            (b.accession_no && String(b.accession_no).toLowerCase().includes(q)) ||
+            (b.publisher && b.publisher.toLowerCase().includes(q)) ||
+            (b.category && b.category.toLowerCase().includes(q)) ||
+            (b.subject && b.subject.toLowerCase().includes(q)) ||
+            (b.description && b.description.toLowerCase().includes(q)) ||
+            (b.keywords && b.keywords.toLowerCase().includes(q)) ||
+            (b.call_number && b.call_number.toLowerCase().includes(q))
+          );
         }
 
+        // Exact Thai sorting matching server
         if (sortBy === 'title') {
-          query = query.order('title', { ascending: true });
+          filtered.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'th'));
         } else if (sortBy === 'author') {
-          query = query.order('author', { ascending: true });
+          filtered.sort((a, b) => (a.author || '').localeCompare(b.author || '', 'th'));
         } else if (sortBy === 'year') {
-          query = query.order('publication_year', { ascending: false });
+          filtered.sort((a, b) => (b.publication_year || '').localeCompare(a.publication_year || ''));
+        } else if (sortBy === 'accession' || sortBy === 'accession_asc') {
+          filtered.sort((a, b) => {
+            const accA = parseInt(String(a.accession_no || a.barcode || '0').replace(/\D/g, ''), 10) || 0;
+            const accB = parseInt(String(b.accession_no || b.barcode || '0').replace(/\D/g, ''), 10) || 0;
+            return accA - accB;
+          });
         } else {
-          query = query.order('created_at', { ascending: false });
+          filtered.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         }
 
-        const from = (page - 1) * pageSize;
-        const to = from + pageSize - 1;
-        const { data, count, error } = await query.range(from, to);
-
-        if (!error && data) {
-          setBooks(data as Book[]);
-          if (count !== null && count !== undefined) {
-            setTotalBooksCount(count);
-          }
-        } else if (error) {
-          console.error('[Supabase Direct] Query error:', error.message);
-        }
+        setTotalBooksCount(filtered.length);
+        const startIndex = (page - 1) * pageSize;
+        const pageItems = filtered.slice(startIndex, startIndex + pageSize);
+        setBooks(pageItems);
       }
     } catch (e) {
       console.error('Error fetching books:', e);
@@ -516,11 +558,14 @@ export default function App() {
       if (!error && data && data.length > 0) {
         setCategories(data);
       } else {
-        const { data: bookCats } = await supabase.from('books').select('category').not('category', 'is', null).limit(2500);
-        if (bookCats) {
-          const unique = Array.from(new Set(bookCats.map((b: any) => b.category).filter(Boolean))).sort();
-          setCategories(unique.map((c, idx) => ({ id: `cat_${idx + 1}`, name: c as string, description: `หมวดหมู่: ${c}` })));
-        }
+        const allBooks = await loadAllBooksIntoClientCache();
+        const catSet = new Set<string>();
+        allBooks.forEach(b => {
+          const c = (b.category || '').trim();
+          if (c) catSet.add(c);
+        });
+        const unique = Array.from(catSet).sort((a, b) => a.localeCompare(b, 'th'));
+        setCategories(unique.map((c, idx) => ({ id: `cat_${idx + 1}`, name: c, description: `หมวดหมู่: ${c}` })));
       }
     } catch (e) {
       console.error('Error fetching categories:', e);
