@@ -39,6 +39,7 @@ import {
 import * as XLSX from 'xlsx';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { supabase } from '../supabaseClient';
+import { Marc21Generator } from './components/Marc21Generator';
 
 // Interfaces based on Database Schema
 interface Book {
@@ -88,7 +89,7 @@ interface ScanHistory {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'catalog' | 'scanner' | 'admin' | 'stats'>('catalog');
+  const [activeTab, setActiveTab] = useState<'catalog' | 'scanner' | 'marc21' | 'admin' | 'stats'>('catalog');
   const [books, setBooks] = useState<Book[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [history, setHistory] = useState<ScanHistory[]>([]);
@@ -123,6 +124,7 @@ export default function App() {
 
   // Admin states
   const [editingBook, setEditingBook] = useState<Book | null>(null);
+  const [deletingBookTarget, setDeletingBookTarget] = useState<Book | null>(null);
   const [isAddingBook, setIsAddingBook] = useState<boolean>(false);
   const [csvInput, setCsvInput] = useState<string>('');
   const [excelPreviewData, setExcelPreviewData] = useState<any[]>([]);
@@ -1633,37 +1635,33 @@ export default function App() {
     }
   };
 
-  const handleDeleteBook = async (id: string) => {
-    if (!confirm('คุณแน่ใจว่าต้องการลบหนังสือเล่มนี้หรือไม่?')) return;
+  const handleDeleteBook = async (id: string, skipConfirm = false) => {
+    if (!skipConfirm && !confirm('คุณแน่ใจว่าต้องการลบหนังสือเล่มนี้ออกจากฐานข้อมูลหรือไม่?')) return;
+    
+    // 1. Immediately remove from local UI state & in-memory cache for instant feedback
+    clientAllBooksRef.current = clientAllBooksRef.current.filter(b => b.id !== id && b.barcode !== id && b.accession_no !== id);
+    setBooks(prev => prev.filter(b => b.id !== id && b.barcode !== id && b.accession_no !== id));
+    setTotalBooksCount(prev => Math.max(0, prev - 1));
+
     try {
-      let deletedViaApi = false;
+      // 2. Delete via Express API
       try {
-        const res = await fetch(`/api/books/${id}`, { method: 'DELETE' });
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const data = await res.json();
-          if (data.success) {
-            deletedViaApi = true;
-          }
-        }
+        await fetch(`/api/books/${id}`, { method: 'DELETE' });
       } catch {}
 
-      if (!deletedViaApi) {
-        // Direct Supabase delete fallback
-        const { error: sbErr } = await supabase.from('books').delete().eq('id', id);
-        if (!sbErr) {
-          deletedViaApi = true;
-        }
+      // 3. Direct Supabase delete across both tables (supports Vercel & serverless environments)
+      try {
+        await supabase.from('books').delete().eq('id', id);
+        await supabase.from('book_customizations').delete().eq('id', id);
+      } catch (sbErr) {
+        console.warn('Direct Supabase delete note:', sbErr);
       }
 
-      if (deletedViaApi) {
-        fetchBooks();
-        alert('ลบหนังสือออกจากฐานข้อมูลเรียบร้อยแล้ว');
-      } else {
-        alert('เกิดข้อผิดพลาดในการลบหนังสือ');
-      }
+      // 4. Invalidate cache
+      clientAllBooksRef.current = [];
+      alert('🗑️ ลบหนังสือออกจากฐานข้อมูลเรียบร้อยแล้ว!');
     } catch (e: any) {
-      alert('Error: ' + e.message);
+      alert('เกิดข้อผิดพลาดในการลบหนังสือ: ' + e.message);
     }
   };
 
@@ -1923,6 +1921,14 @@ export default function App() {
               <Camera className="h-4 w-4" /> สแกนหน้าปก
             </button>
             <button 
+              onClick={() => { stopCamera(); setActiveTab('marc21'); }}
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 ${activeTab === 'marc21' ? 'bg-emerald-50 text-emerald-800 font-bold border border-emerald-300 shadow-sm' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'}`}
+            >
+              <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+              <span>สร้าง MARC 21</span>
+              <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-600 text-white font-mono font-bold">AI</span>
+            </button>
+            <button 
               onClick={() => { stopCamera(); setActiveTab('stats'); }}
               className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${activeTab === 'stats' ? 'bg-amber-50 text-amber-700' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'}`}
             >
@@ -1999,6 +2005,13 @@ export default function App() {
         >
           <Camera className="h-5 w-5 mb-0.5" />
           <span>สแกนหน้าปก</span>
+        </button>
+        <button 
+          onClick={() => { stopCamera(); setActiveTab('marc21'); }}
+          className={`flex flex-col items-center text-xs ${activeTab === 'marc21' ? 'text-emerald-700 font-bold' : 'text-slate-500'}`}
+        >
+          <FileSpreadsheet className="h-5 w-5 mb-0.5 text-emerald-600" />
+          <span>MARC 21</span>
         </button>
         <button 
           onClick={() => { stopCamera(); setActiveTab('stats'); }}
@@ -3045,6 +3058,20 @@ export default function App() {
           </div>
         )}
 
+        {/* TAB 3: MARC 21 GENERATOR */}
+        {activeTab === 'marc21' && (
+          <Marc21Generator
+            onBookAddedToLibrary={() => {
+              fetchBooks(currentPage);
+            }}
+            openBarcodeScanner={() => {
+              setActiveTab('scanner');
+              setScannerMode('barcode');
+              startCamera();
+            }}
+          />
+        )}
+
         {/* TAB 4: ADMIN DASHBOARD */}
         {activeTab === 'admin' && (
           <div className="space-y-8">
@@ -3555,7 +3582,7 @@ export default function App() {
                               <Edit3 className="h-4 w-4" />
                             </button>
                             <button 
-                              onClick={() => handleDeleteBook(b.id)}
+                              onClick={() => setDeletingBookTarget(b)}
                               className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition"
                               title="ลบหนังสือ"
                             >
@@ -4004,6 +4031,76 @@ export default function App() {
               </div>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* DELETE CONFIRMATION MODAL FOR BOOK MANAGEMENT */}
+      {deletingBookTarget && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-rose-200 overflow-hidden">
+            <div className="p-5 bg-rose-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5 font-bold text-base">
+                <AlertTriangle className="h-5 w-5 text-amber-300 shrink-0" />
+                <span>ยืนยันการลบหนังสือออกจากระบบ</span>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setDeletingBookTarget(null)} 
+                className="p-1 hover:bg-rose-700 rounded-full transition text-white/80 hover:text-white cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl flex gap-3.5 items-center">
+                <img 
+                  src={deletingBookTarget.cover_image} 
+                  alt={deletingBookTarget.title} 
+                  className="w-12 h-16 object-contain bg-white rounded-lg border border-slate-200 shadow-2xs shrink-0" 
+                />
+                <div className="text-xs space-y-1 min-w-0">
+                  <h4 className="font-bold text-slate-900 line-clamp-2 text-sm">{deletingBookTarget.title}</h4>
+                  <p className="text-slate-500 truncate">โดย: {deletingBookTarget.author}</p>
+                  <p className="font-mono text-slate-600 font-semibold">
+                    เลขทะเบียน: {deletingBookTarget.accession_no || deletingBookTarget.barcode || '-'} | {deletingBookTarget.call_number || '-'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 space-y-1">
+                <div className="font-bold text-rose-950 flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                  <span>คำเตือน: ไม่สามารถกู้คืนกลับมาได้</span>
+                </div>
+                <p className="text-slate-700 leading-relaxed">
+                  เมื่อยืนยันการลบ ข้อมูลทางบรรณานุกรมของหนังสือเล่มนี้จะถูกลบออกจากฐานข้อมูลห้องสมุด Supabase ทันที
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button 
+                  type="button" 
+                  onClick={() => setDeletingBookTarget(null)} 
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    const targetId = deletingBookTarget.id;
+                    setDeletingBookTarget(null);
+                    handleDeleteBook(targetId, true);
+                  }} 
+                  className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs transition shadow-md shadow-rose-600/30 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>ยืนยันลบหนังสือเล่มนี้</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
       {/* Real-time Floating Notification Toast */}

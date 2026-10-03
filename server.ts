@@ -8,6 +8,8 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import * as XLSX from 'xlsx';
+import marc21Handler from './api/generate-marc21';
+import uctalHandler from './api/uctal-search';
 
 dotenv.config();
 
@@ -639,6 +641,54 @@ async function mergeSupabaseCustomizations() {
   }
 }
 
+// Periodically pull any books from Supabase that are missing in the server cache
+async function syncAllBooksFromSupabase() {
+  try {
+    console.log('[Supabase Sync] Checking for new books in Supabase database...');
+    const { data: supaBooks, error } = await supabase.from('books').select('*');
+    if (!error && supaBooks && supaBooks.length > 0) {
+      const cacheMap = new Map();
+      cachedBooks.forEach(b => cacheMap.set(b.id, b));
+      
+      let newAdded = 0;
+      let updatedCount = 0;
+      
+      const newCache = [...cachedBooks];
+      
+      supaBooks.forEach(sb => {
+        if (!cacheMap.has(sb.id)) {
+          newCache.push({ ...sb, source: 'ฐานข้อมูล Supabase' });
+          newAdded++;
+        } else {
+          // Check if updated_at is newer
+          const cb = cacheMap.get(sb.id);
+          const sbUpdate = sb.updated_at ? new Date(sb.updated_at).getTime() : 0;
+          const cbUpdate = cb.updated_at ? new Date(cb.updated_at).getTime() : 0;
+          if (sbUpdate > cbUpdate) {
+            const idx = newCache.findIndex(item => item.id === sb.id);
+            if (idx !== -1) {
+              newCache[idx] = { ...newCache[idx], ...sb, source: 'ฐานข้อมูล Supabase' };
+              updatedCount++;
+            }
+          }
+        }
+      });
+      
+      if (newAdded > 0 || updatedCount > 0) {
+        cachedBooks = newCache;
+        console.log(`[Supabase Sync] Synced successfully. Added ${newAdded} new books, updated ${updatedCount} existing books.`);
+        saveCacheToDisk();
+        // Broadcast the database sync event to trigger a frontend refresh
+        broadcastRealtime({ type: 'DATABASE_SYNCED', payload: { added: newAdded, updated: updatedCount } });
+      } else {
+        console.log('[Supabase Sync] Server cache is already fully up-to-date with Supabase.');
+      }
+    }
+  } catch (err) {
+    console.error('[Supabase Sync] Error during sync:', err);
+  }
+}
+
 async function initializeCache() {
   console.log('[Cache] Initializing memory cache from Supabase database (Source of Truth)...');
   
@@ -1093,11 +1143,11 @@ function calculateSimilarityScore(
 // Get all books with filter, search and pagination
 app.get('/api/books', async (req, res) => {
   try {
-    // Background Stale-While-Revalidate: Sync with Supabase customizations if cache hasn't merged in the last 2 minutes
+    // Background Stale-While-Revalidate: Sync with Supabase if cache hasn't merged in the last 2 minutes
     const now = Date.now();
     if (now - lastSupabaseMergeTime > 120000) {
       lastSupabaseMergeTime = now;
-      mergeSupabaseCustomizations().catch(err => console.error('[Cache] Revalidation error:', err));
+      syncAllBooksFromSupabase().catch(err => console.error('[Cache] Revalidation error:', err));
     }
 
     const qSearch = req.query.q ? String(req.query.q).toLowerCase() : '';
@@ -1488,6 +1538,9 @@ async function searchInternetBookCover(title: string, author = '', publisher = '
 }
 
 // General search cover endpoint
+app.post('/api/generate-marc21', (req, res) => marc21Handler(req, res));
+app.post('/api/uctal-search', (req, res) => uctalHandler(req, res));
+
 app.post('/api/search-cover', async (req, res) => {
   try {
     const { bookId, title, author, publisher, isbn } = req.body || {};
@@ -2006,19 +2059,26 @@ app.post('/api/books', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Title, Author and ISBN are required.' });
     }
 
-    // Generate safe specific ID
+    // Support payload id, fall back to isbn-based generation if none provided
     const cleanIsbn = String(bookData.isbn || '').replace(/[^a-zA-Z0-9]/g, '');
-    const bookId = `book_${cleanIsbn || Date.now()}`;
+    const bookId = bookData.id || `book_${cleanIsbn || Date.now()}`;
 
     const data = {
       ...bookData,
       id: bookId,
-      created_at: new Date().toISOString(),
+      created_at: bookData.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
 
-    // Add to cache
-    cachedBooks.unshift(data);
+    // Upsert in cache to prevent duplicate rows in array
+    const idx = cachedBooks.findIndex(b => b.id === bookId);
+    if (idx !== -1) {
+      cachedBooks[idx] = { ...cachedBooks[idx], ...data };
+      console.log(`[Cache] Updated existing book ${bookId} in server cache.`);
+    } else {
+      cachedBooks.unshift(data);
+      console.log(`[Cache] Added new book ${bookId} to server cache.`);
+    }
     
     // Add to categories cache if new
     if (data.category && !cachedCategories.some(c => c.name === data.category)) {
@@ -2032,7 +2092,7 @@ app.post('/api/books', async (req, res) => {
 
     // Background Supabase update
     try {
-      await supabase.from('books').upsert(data);
+      await supabase.from('books').upsert(data, { onConflict: 'id' });
 
       // Also write to book_customizations for fast cross-device sync
       await supabase.from('book_customizations').upsert({
@@ -2047,13 +2107,13 @@ app.post('/api/books', async (req, res) => {
         category: data.category,
         call_number: data.call_number,
         updated_at: data.updated_at
-      });
+      }, { onConflict: 'id' });
     } catch (sbErr) {
       console.warn('Backup write to Supabase failed for new book:', sbErr);
     }
 
-    // Broadcast real-time book creation
-    broadcastRealtime({ type: 'BOOK_CREATED', payload: data });
+    // Broadcast real-time book creation or update
+    broadcastRealtime({ type: idx !== -1 ? 'BOOK_UPDATED' : 'BOOK_CREATED', payload: data });
 
     res.status(201).json({ success: true, id: bookId, book: data });
   } catch (err: any) {
@@ -2239,27 +2299,26 @@ app.put('/api/books/:id', async (req, res) => {
 app.delete('/api/books/:id', async (req, res) => {
   try {
     const bookId = req.params.id;
-    const idx = cachedBooks.findIndex(b => b.id === bookId);
-    if (idx === -1) {
-      return res.status(404).json({ success: false, error: 'Book not found' });
+    
+    // Remove from in-memory cache if present
+    const idx = cachedBooks.findIndex(b => b.id === bookId || b.barcode === bookId || b.accession_no === bookId);
+    if (idx !== -1) {
+      cachedBooks.splice(idx, 1);
+      saveCacheToDisk();
     }
 
-    // Remove from cache
-    cachedBooks.splice(idx, 1);
-    saveCacheToDisk();
-
-    // Background Supabase deletion
+    // Always execute Supabase deletion across books and customizations
     try {
       await supabase.from('books').delete().eq('id', bookId);
       await supabase.from('book_customizations').delete().eq('id', bookId);
     } catch (sbErr) {
-      console.warn('Backup deletion in Supabase failed for book:', sbErr);
+      console.warn('[Supabase Delete] Error deleting book from Supabase:', sbErr);
     }
 
     // Broadcast real-time book deletion to all clients
     broadcastRealtime({ type: 'BOOK_DELETED', payload: { id: bookId } });
 
-    res.json({ success: true, message: 'Book deleted successfully' });
+    res.json({ success: true, id: bookId, message: 'Book deleted successfully' });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

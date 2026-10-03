@@ -121,22 +121,28 @@ Return strictly valid JSON:
       rawText = response.text || "{}";
     } catch (m1Err: any) {
       console.warn('Primary model gemini-3.8-flash notice, attempting fallback model gemini-3.1-flash-lite:', m1Err?.message || m1Err);
-      const fallbackResponse = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite',
-        contents: [
-          {
-            inlineData: {
-              data: base64Data,
-              mimeType
-            }
-          },
-          promptText
-        ],
-        config: {
-          responseMimeType: 'application/json'
-        }
-      });
-      rawText = fallbackResponse.text || "{}";
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      try {
+        const fallbackResponse = await ai.models.generateContent({
+          model: 'gemini-3.1-flash-lite',
+          contents: [
+            {
+              inlineData: {
+                data: base64Data,
+                mimeType
+              }
+            },
+            promptText
+          ],
+          config: {
+            responseMimeType: 'application/json'
+          }
+        });
+        rawText = fallbackResponse.text || "{}";
+      } catch (fbErr: any) {
+        console.warn('Fallback model gemini-3.1-flash-lite notice:', fbErr?.message || fbErr);
+        rawText = "{}";
+      }
     }
 
     const result = JSON.parse(rawText);

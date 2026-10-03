@@ -1,0 +1,3554 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  FileSpreadsheet, 
+  Search, 
+  Copy, 
+  Check, 
+  Download, 
+  Trash2, 
+  Plus, 
+  Sparkles, 
+  Layers, 
+  Database, 
+  RefreshCw, 
+  Edit3, 
+  BookOpen, 
+  Barcode, 
+  CheckSquare, 
+  Square, 
+  Info,
+  ExternalLink,
+  Save,
+  X,
+  Hash,
+  AlertTriangle,
+  Building,
+  Globe,
+  Library,
+  ChevronDown,
+  ChevronUp,
+  FileText
+} from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
+import { supabase } from '../../supabaseClient';
+
+export const calculateThaiCutter = generateThaiCutter;
+
+export const AuthorInputWithSuggestions = ({
+  value,
+  onChange,
+  onSelectAuthor,
+  records,
+  currentTitle = ''
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  onSelectAuthor: (author: string, calculatedCutter: string) => void;
+  records: Marc21Record[];
+  currentTitle?: string;
+}) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<{ name: string; cutter: string }[]>([]);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const q = (value || '').trim();
+    if (q.length < 1) {
+      setSuggestions([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        // Collect matching authors from local table records
+        const sessionAuthors = records
+          .map(r => r.author_personal)
+          .filter((a): a is string => Boolean(a && a !== '-' && a.toLowerCase().includes(q.toLowerCase())));
+
+        // Fetch matching authors from Supabase catalog
+        const { data } = await supabase
+          .from('books')
+          .select('author')
+          .ilike('author', `%${q}%`)
+          .limit(8);
+
+        const dbAuthors = (data || [])
+          .map(d => d.author)
+          .filter((a): a is string => Boolean(a && a.trim()));
+
+        const combinedNames = Array.from(new Set([...sessionAuthors, ...dbAuthors])).slice(0, 8);
+        const existingCutters = new Set(records.map(r => r.cutter_082b).filter(Boolean));
+
+        const mapped = combinedNames.map(authorName => {
+          const cutter = calculateThaiCutter(authorName, currentTitle || 'หนังสือ', existingCutters);
+          return {
+            name: authorName,
+            cutter
+          };
+        });
+
+        setSuggestions(mapped);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 150);
+
+    return () => clearTimeout(timer);
+  }, [value, records, currentTitle]);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={containerRef} className="relative w-full">
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setIsOpen(true);
+        }}
+        onFocus={() => setIsOpen(true)}
+        placeholder="พิมพ์ชื่อผู้แต่ง (ระบบจะค้นหาชื่อที่มีอยู่แล้วเพื่อเลือกได้)..."
+        className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 focus:bg-white transition text-xs sm:text-sm text-slate-800"
+      />
+      {isOpen && suggestions.length > 0 && (
+        <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden max-h-56 overflow-y-auto animate-fadeIn">
+          <div className="px-3 py-1.5 bg-slate-100 text-[10px] font-extrabold text-slate-600 border-b border-slate-200 uppercase tracking-wider flex items-center justify-between">
+            <span>👤 รายชื่อผู้แต่งในระบบ ({suggestions.length})</span>
+            <span className="text-emerald-700 font-bold">คลิกเลือกเพื่อใช้ชื่อ & ดึงเลขคัตเตอร์</span>
+          </div>
+          {suggestions.map((item, idx) => (
+            <button
+              key={`auth_sug_${idx}`}
+              type="button"
+              onClick={() => {
+                onSelectAuthor(item.name, item.cutter);
+                setIsOpen(false);
+              }}
+              className="w-full text-left px-3.5 py-2.5 text-xs text-slate-800 hover:bg-emerald-50 hover:text-emerald-950 font-medium transition flex items-center justify-between border-b border-slate-100 last:border-0 cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-900">{item.name}</span>
+                <span className="text-[11px] font-mono font-bold text-emerald-800 bg-emerald-100/90 px-2 py-0.5 rounded border border-emerald-300">
+                  คัตเตอร์: {item.cutter}
+                </span>
+              </div>
+              <span className="text-[10px] text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300 font-bold">
+                เลือก
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const parseMarcSubfield = (data: string, subfield: string): string => {
+  if (!data) return '';
+  const normalized = data.replace(/\u001f/g, '$');
+  const regex = new RegExp(`\\$${subfield}([^\\$]+)`, 'i');
+  const match = normalized.match(regex);
+  return match ? match[1].trim() : '';
+};
+
+export const formatAddedEntry700 = (val: string): string => {
+  if (!val || val === '-' || val.trim() === '') return '-';
+  let clean = val.trim();
+  
+  // Clean all existing punctuation and suffix variants
+  clean = clean
+    .replace(/,\s*ผู้\s*,\s*ผู้แปล\.?/gi, '')
+    .replace(/,\s*ผู้\s*,\s*ผู้\.?/gi, '')
+    .replace(/,\s*ผู้แปล\s*,\s*ผู้แปล\.?/gi, '')
+    .replace(/,\s*ผู้เรียบเรียง\s*,\s*ผู้แปล\.?/gi, '')
+    .replace(/,\s*ผู้เรียบเรียง\.?/gi, '')
+    .replace(/,\s*เรียบเรียง\.?/gi, '')
+    .replace(/,\s*ผู้แปล\.?/gi, '')
+    .replace(/,\s*ผู้\.?/gi, '')
+    .replace(/,\s*แปล\.?/gi, '')
+    .replace(/\s*ผู้เรียบเรียง\.?/gi, '')
+    .replace(/\s*เรียบเรียง\.?/gi, '')
+    .replace(/\s*ผู้แปล\.?/gi, '')
+    .replace(/\s*แปลโดย\.?/gi, '')
+    .replace(/\s*แปล\.?/gi, '')
+    .replace(/[\s\.:;=,]+$/, '')
+    .replace(/^[\s\.:;=,]+/, '')
+    .trim();
+
+  if (!clean || clean === '-') return '-';
+
+  return `${clean}, ผู้แปล.`;
+};
+
+export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): string => {
+  if (!rawResp && !authorPersonal) return 'ไม่ระบุผู้แต่ง.';
+
+  let text = rawResp || authorPersonal || '';
+
+  // 1. Strip translator clauses completely from 245 $c (author only!)
+  text = text
+    .replace(/;\s*[^;]*?(?:แปล|ผู้แปล|แปลโดย|เรื่องและภาพ|ภาพประกอบ|วาดภาพ)[^;]*$/gi, '')
+    .replace(/\/\s*[^/]*?(?:แปล|ผู้แปล|แปลโดย)[^/]*$/gi, '')
+    .replace(/,\s*[^,]*?(?:แปล|ผู้แปล|แปลโดย)[^,]*$/gi, '')
+    .trim();
+
+  // Clean trailing slashes, semicolons, colons
+  text = text.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
+
+  if (!text && authorPersonal) {
+    text = authorPersonal.replace(/\.$/, '').trim();
+  }
+
+  // 2. Parse authors
+  let rawAuthors: string[] = [];
+  if (text.includes(';')) {
+    rawAuthors = text.split(';').map(a => a.trim()).filter(Boolean);
+  } else if (text.includes('/')) {
+    rawAuthors = text.split('/').map(a => a.trim()).filter(Boolean);
+  } else if (text.includes(' และ ')) {
+    const parts = text.split(' และ ').map(a => a.trim()).filter(Boolean);
+    if (parts.length > 1) {
+      const firsts = parts[0].split(',').map(a => a.trim()).filter(Boolean);
+      rawAuthors = [...firsts, parts[1]];
+    } else {
+      rawAuthors = parts;
+    }
+  } else {
+    // If separated by commas
+    const parts = text.split(',').map(a => a.trim()).filter(Boolean);
+    if (parts.length === 2 && !/[ก-ฮ]/.test(parts[0]) && !/[ก-ฮ]/.test(parts[1]) && parts[1].length <= 15) {
+      rawAuthors = [`${parts[0]}, ${parts[1]}`];
+    } else if (parts.length > 1) {
+      rawAuthors = parts;
+    } else {
+      rawAuthors = [text];
+    }
+  }
+
+  // Clean each author name
+  const cleanAuthors = rawAuthors.map(a => {
+    return a
+      .replace(/\s*(?:แต่ง|ผู้แต่ง|เขียน|ผู้เขียน|เรื่อง|ผู้เรียบเรียง|เรียบเรียง|\.)$/i, '')
+      .replace(/[\s\/:;=,]+$/, '')
+      .replace(/^[\s\/:;=,]+/, '')
+      .trim();
+  }).filter(Boolean);
+
+  if (cleanAuthors.length === 0) {
+    if (authorPersonal) {
+      const cleanA = authorPersonal.replace(/\.$/, '').trim();
+      return cleanA.endsWith('.') ? cleanA : `${cleanA}.`;
+    }
+    return 'ไม่ระบุผู้แต่ง.';
+  }
+
+  const N = cleanAuthors.length;
+
+  if (N === 1) {
+    const a = cleanAuthors[0];
+    return a.endsWith('.') ? a : `${a}.`;
+  }
+
+  if (N === 2) {
+    return `${cleanAuthors[0]} และ ${cleanAuthors[1]}.`;
+  }
+
+  if (N === 3) {
+    return `${cleanAuthors[0]}, ${cleanAuthors[1]} และ ${cleanAuthors[2]}.`;
+  }
+
+  // N >= 4: ลงชื่อผู้แต่งคนแรก และตามด้วย [และคนอื่นๆ (จำนวน) คน]
+  const firstAuthor = cleanAuthors[0];
+  const others = N - 1;
+  return `${firstAuthor} [และคนอื่นๆ ${others} คน].`;
+};
+
+export const formatMarc246Subfields = (val: string): string => {
+  if (!val || val === '-' || val.trim() === '') return '-';
+  const clean = val
+    .replace(/\$a/g, '')
+    .replace(/:\$b/g, ' : ')
+    .replace(/\$b/g, ' ')
+    .replace(/[\s\/:;=,]+$/, '')
+    .replace(/^[\s\/:;=,]+/, '')
+    .trim();
+  if (!clean) return '-';
+  if (clean.includes(':')) {
+    const parts = clean.split(':');
+    const pA = parts[0].trim();
+    const pB = parts.slice(1).join(':').trim();
+    return `${pA} : ${pB}`;
+  }
+  return clean;
+};
+
+export const formatCleanMarc245Title = (rawA: string, rawB: string, raw246: string): { formatted245a: string, formatted245b: string } => {
+  let mainTitle = (rawA || '').trim();
+  let subtitle = (rawB || '').trim();
+  let engTitle = (raw246 || '').trim();
+
+  // 1. Remove responsibility slash (/ ...) from mainTitle
+  mainTitle = mainTitle.replace(/\s*\/\s*.*$/, '').trim();
+
+  // 2. Check if mainTitle contains repeated pattern "X : X" or "X = Y : X = Y"
+  if (mainTitle.includes(' : ')) {
+    const colonParts = mainTitle.split(' : ').map(p => p.trim()).filter(Boolean);
+    if (colonParts.length >= 2 && colonParts[0].toLowerCase() === colonParts[1].toLowerCase()) {
+      mainTitle = colonParts[0];
+    } else if (colonParts.length === 3 && colonParts[0] === colonParts[1]) {
+      mainTitle = colonParts[0];
+      if (!engTitle) engTitle = colonParts[2];
+    } else if (!subtitle && colonParts.length >= 2) {
+      mainTitle = colonParts[0];
+      subtitle = colonParts.slice(1).join(' : ');
+    }
+  }
+
+  // 3. Check if mainTitle contains " = "
+  if (mainTitle.includes(' = ')) {
+    const eqParts = mainTitle.split(' = ').map(p => p.trim()).filter(Boolean);
+    if (eqParts.length >= 2) {
+      mainTitle = eqParts[0];
+      if (!engTitle) {
+        engTitle = eqParts.slice(1).join(' = ');
+      }
+    }
+  }
+
+  // 4. Check if subtitle contains " = "
+  if (subtitle.includes(' = ')) {
+    const eqParts = subtitle.split(' = ').map(p => p.trim()).filter(Boolean);
+    if (eqParts.length >= 2) {
+      subtitle = eqParts[0];
+      if (!engTitle) {
+        engTitle = eqParts.slice(1).join(' = ');
+      }
+    }
+  }
+
+  const cleanA = mainTitle.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
+  let cleanB = subtitle.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
+  
+  // Format clean display for 246 parallel title
+  let clean246Display = formatMarc246Subfields(engTitle);
+  if (clean246Display === '-') clean246Display = '';
+
+  // 5. De-duplicate subtitle if cleanA already contains colon or if cleanA contains cleanB
+  if (cleanB === cleanA || cleanB === '-' || cleanB.toLowerCase() === cleanA.toLowerCase()) {
+    cleanB = '';
+  }
+  if (cleanB && (cleanA.includes(':') || cleanA.toLowerCase().includes(cleanB.toLowerCase()))) {
+    cleanB = '';
+  }
+
+  // 6. De-duplicate 246 English title
+  if (clean246Display === cleanA || clean246Display === cleanB || clean246Display.toLowerCase() === cleanA.toLowerCase()) {
+    clean246Display = '';
+  }
+
+  const hasB = Boolean(cleanB);
+  const has246 = Boolean(clean246Display);
+
+  let formatted245a = cleanA;
+  if (hasB && has246) {
+    formatted245a = `${cleanA} : ${cleanB} = ${clean246Display}`;
+  } else if (hasB) {
+    formatted245a = `${cleanA} : ${cleanB}`;
+  } else if (has246) {
+    formatted245a = `${cleanA} = ${clean246Display}`;
+  } else {
+    formatted245a = cleanA;
+  }
+
+  const formatted245b = has246 ? clean246Display : (hasB ? cleanB : '-');
+
+  return { formatted245a, formatted245b };
+};
+
+interface Marc21GeneratorProps {
+  onBookAddedToLibrary?: () => void;
+  openBarcodeScanner?: () => void;
+}
+
+export const MARC21_COLUMNS = [
+  { key: 'date', label: 'วันที่', tag: 'DATE', width: 'w-28' },
+  { key: 'col1', label: 'คอลัมน์1', tag: 'NOTE', width: 'w-24' },
+  { key: 'accession_no', label: 'เลขทะเบียน', tag: 'ACC', width: 'w-32' },
+  { key: 'isbn', label: '020 ISBN', tag: '020', width: 'w-36' },
+  { key: 'author_personal', label: '100 ผู้แต่ง (ชื่อบุคคล)', tag: '100', width: 'w-48' },
+  { key: 'author_corporate', label: '110 ผู้แต่ง (ชื่อนิติบุคคล)', tag: '110', width: 'w-40' },
+  { key: 'title_245a', label: '245 $a : $b = 246 $a', tag: '245 $a', width: 'w-72' },
+  { key: 'title_245b', label: '246 (Ind1=3, Ind2=1) $a :$b', tag: '246', width: 'w-64' },
+  { key: 'responsibility_245c', label: '245 $c ส่วนแจ้งความรับผิดชอบ', tag: '245 $c', width: 'w-56' },
+  { key: 'ddc_082a', label: '082 $a เลขหมู่หนังสือ', tag: '082 $a', width: 'w-28' },
+  { key: 'cutter_082b', label: '082 $b เลขประจำหนังสือ', tag: '082 $b', width: 'w-28' },
+  { key: 'pub_place', label: '$a สถานที่พิมพ์', tag: '260 $a', width: 'w-32' },
+  { key: 'publisher', label: '$b สำนักพิมพ์', tag: '260 $b', width: 'w-44' },
+  { key: 'pub_year', label: '260 $c ปีที่พิมพ์', tag: '260 $c', width: 'w-28' },
+  { key: 'pages_300a', label: '300 $a จำนวนหน้า', tag: '300 $a', width: 'w-28' },
+  { key: 'illustration_300b', label: '300 $b ภาพประกอบ', tag: '300 $b', width: 'w-28' },
+  { key: 'subject_650a', label: '650 $a หัวเรื่อง 1', tag: '650 $a', width: 'w-52' },
+  { key: 'copies', label: 'จำนวนเล่ม', tag: 'QTY', width: 'w-24' },
+  { key: 'summary_520', label: '520 เรื่องย่อ.', tag: '520', width: 'w-80' },
+  { key: 'edition_250', label: '250 พิมพ์ครั้งที่', tag: '250', width: 'w-32' },
+  { key: 'price_541', label: '541 ราคา', tag: '541', width: 'w-28' },
+  { key: 'series_490', label: '490 ชุด', tag: '490', width: 'w-40' },
+  { key: 'added_entry_700', label: '700 ผู้แปล/ผู้แต่งร่วม (Tag 700)', tag: '700', width: 'w-48' },
+  { key: 'acquisition_source', label: 'แหล่งที่ได้รับ', tag: 'SRC', width: 'w-32' },
+  { key: 'col2', label: 'คอลัมน์2', tag: 'EXTRA', width: 'w-24' },
+  { key: 'source_type', label: 'ที่มา', tag: 'FUND', width: 'w-28' },
+  { key: 'storage_location', label: 'สถานที่จัดเก็บ', tag: 'LOC', width: 'w-36' },
+  { key: 'status', label: 'สถานะ', tag: 'STAT', width: 'w-28' },
+  { key: 'col3', label: 'คอลัมน์3', tag: 'EXTRA2', width: 'w-24' },
+  
+  // Extended MARC 21 Tags (All remaining MARC21 fields after Column 3)
+  { key: 'leader_000', label: 'Leader ข้อมูลส่วนหัวระเบียน', tag: '000 LDR', width: 'w-56' },
+  { key: 'control_001', label: '001 เลขควบคุม (Bib ID)', tag: '001', width: 'w-32' },
+  { key: 'control_003', label: '003 รหัสหน่วยงานควบคุม', tag: '003', width: 'w-28' },
+  { key: 'trans_005', label: '005 วันที่ปรับปรุงระเบียน', tag: '005', width: 'w-44' },
+  { key: 'fixed_008', label: '008 ข้อมูลคงที่ทั่วไป', tag: '008', width: 'w-64' },
+  { key: 'issn_022', label: '022 ISSN', tag: '022', width: 'w-32' },
+  { key: 'cat_source_040', label: '040 แหล่งลงรายการ', tag: '040', width: 'w-36' },
+  { key: 'language_041', label: '041 รหัสภาษา', tag: '041', width: 'w-28' },
+  { key: 'dimensions_300c', label: '300 $c ขนาดเล่ม', tag: '300 $c', width: 'w-28' },
+  { key: 'note_general_500', label: '500 หมายเหตุทั่วไป', tag: '500', width: 'w-56' },
+  { key: 'note_bib_504', label: '504 หมายเหตุบรรณานุกรม', tag: '504', width: 'w-48' },
+  { key: 'note_contents_505', label: '505 สารบัญเนื้อหาในเล่ม', tag: '505', width: 'w-64' },
+  { key: 'subject_person_600', label: '600 หัวเรื่อง - ชื่อบุคคล', tag: '600', width: 'w-48' },
+  { key: 'subject_corp_610', label: '610 หัวเรื่อง - นิติบุคคล', tag: '610', width: 'w-48' },
+  { key: 'subject_uniform_630', label: '630 หัวเรื่อง - ชื่อแบบฉบับ/กลุ่มผู้อ่าน', tag: '630', width: 'w-48' },
+  { key: 'subject_geo_651', label: '651 หัวเรื่อง - ชื่อภูมิศาสตร์', tag: '651', width: 'w-48' },
+  { key: 'subject_650_2', label: '650 หัวเรื่อง 2', tag: '650 (2)', width: 'w-48' },
+  { key: 'added_corp_710', label: '710 ผู้แต่งร่วม - นิติบุคคล', tag: '710', width: 'w-48' },
+  { key: 'added_title_740', label: '740 ชื่อเรื่องเกี่ยวข้อง', tag: '740', width: 'w-56' },
+  { key: 'series_uniform_830', label: '830 ชื่อชุดแบบฉบับ', tag: '830', width: 'w-56' },
+  { key: 'electronic_856', label: '856 $u ลิงก์รูปปก/ไฟล์', tag: '856 $u', width: 'w-64' },
+  { key: 'local_907', label: '907 เลขระเบียนท้องถิ่น', tag: '907', width: 'w-32' },
+];
+
+// Primary 29 columns from first column (date) up to Column 3 (EXTRA2) for copying
+export const PRIMARY_COPY_COLUMNS = MARC21_COLUMNS.slice(0, 29);
+
+export const DEFAULT_STORAGE_LOCATIONS = [
+  'สำหรับเด็ก',
+  'สำหรับเด็ก (ภาษาฯ)',
+  'สำหรับเด็ก (ศาสนา)',
+  'เยาวชน',
+  'การ์ตูน วิทย์/คณิต',
+  'การ์ตูน สังคม',
+  'การ์ตูน ความรู้ทั่วไป',
+  'การ์ตูน ภาษา/วรรณกรรม',
+  'แบบเรียน',
+  'อ้างอิง/Ref',
+  'หมวด 000 เบ็ดเตล็ด',
+  'หมวด 100 ปรัชญาและจิตวิทยา',
+  'หมวด 200 ศาสนา',
+  'หมวด 300 สังคมศาสตร์',
+  'หมวด 400 ภาษาศาสตร์',
+  'หมวด 500 วิทยาศาสตร์',
+  'หมวด 600 วิทยาศาสตร์ประยุกต์และเทคโนโลยี',
+  'หมวด 700 ศิลปกรรมและการบันเทิง',
+  'หมวด 800 วรรณคดี',
+  'หมวด 900 ประวัติศาสตร์และภูมิศาสตร์',
+  'หมวด 100',
+  'หมวด ทั่วไป',
+  'นวนิยาย',
+  'เรื่องสั้น',
+  'มุมหนังสือใหม่',
+  'ห้องสมุดมารวย',
+  'ชั้นหนังสือทั่วไป'
+];
+
+export const DEFAULT_SUBJECT_HEADINGS = [
+  'ทั่วไป',
+  'การดำเนินชีวิต',
+  'การดำเนินชีวิต --วรรณกรรมสำหรับเด็ก',
+  'จิตวิทยา',
+  'จิตวิทยาเด็ก',
+  'การพัฒนาตนเอง',
+  'การเงินส่วนบุคคล',
+  'การบริหารธุรกิจ',
+  'วรรณกรรมสำหรับเด็ก',
+  'นิทานภาพ',
+  'การ์ตูนความรู้',
+  'การแต่งกาย',
+  'อาหารและโภชนาการ',
+  'สุขภาพและการดูแลตนเอง',
+  'วิทยาศาสตร์',
+  'เทคโนโลยี',
+  'คอมพิวเตอร์',
+  'ประวัติศาสตร์',
+  'ชีวประวัติ',
+  'ชีวประวัติ--สำหรับเด็ก.',
+  'ปรัชญาและศาสนา',
+  'ภาษาและการสื่อสาร',
+  'นวนิยาย',
+  'เรื่องสั้น',
+  'การศึกษาและการเรียนรู้',
+  'การแก้ปัญหาในเด็ก.'
+];
+
+export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToLibrary }) => {
+  const [records, setRecords] = useState<Marc21Record[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [batchQueries, setBatchQueries] = useState('');
+  const [isBatchOpen, setIsBatchOpen] = useState(false);
+  const [isCutterTableOpen, setIsCutterTableOpen] = useState(false);
+  const [testAuthor, setTestAuthor] = useState('โสรยา');
+  const [testTitle, setTestTitle] = useState('การทดลอง');
+  const [isLoading, setIsLoading] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [editingRecord, setEditingRecord] = useState<Marc21Record | null>(null);
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<'selected' | Marc21Record | null>(null);
+  const [startAccNum, setStartAccNum] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('iabs_start_acc_num');
+      return saved ? parseInt(saved, 10) || 2613 : 2613;
+    } catch {
+      return 2613;
+    }
+  });
+  const [inputStartAcc, setInputStartAcc] = useState<string>(() => String(startAccNum).padStart(10, '0'));
+
+  useEffect(() => {
+    setInputStartAcc(String(startAccNum).padStart(10, '0'));
+    try {
+      localStorage.setItem('iabs_start_acc_num', String(startAccNum));
+    } catch {}
+  }, [startAccNum]);
+
+  // Dedicated UC-TAL ThaiLIS (https://uc.thailis.or.th) Box Search States
+  const [uctalKeyword, setUctalKeyword] = useState('');
+  const [uctalRegion, setUctalRegion] = useState('');
+  const [uctalResults, setUctalResults] = useState<any[]>([]);
+  const [isUctalLoading, setIsUctalLoading] = useState(false);
+  const [isUctalPanelOpen, setIsUctalPanelOpen] = useState(false);
+  const [uctalTotalFound, setUctalTotalFound] = useState<number | null>(null);
+  const [viewingMarcDetail, setViewingMarcDetail] = useState<any | null>(null);
+  const [selectedHoldingLib, setSelectedHoldingLib] = useState<any | null>(null);
+
+  // Dynamic available subject headings collected across all records, search results, and standard list
+  const allAvailableSubjects = React.useMemo(() => {
+    const set = new Set<string>(DEFAULT_SUBJECT_HEADINGS);
+    
+    // 1. Collect from current table records
+    records.forEach(r => {
+      if (r.subject_650a && r.subject_650a !== '-') set.add(r.subject_650a.trim());
+      if (r.subject_650_2 && r.subject_650_2 !== '-') set.add(r.subject_650_2.trim());
+      if (Array.isArray(r.marc_tags)) {
+        r.marc_tags.forEach((tag: any) => {
+          if (tag.tagID === '650' || tag.tag === '650') {
+            const parsed = parseMarcSubfield(tag.data || '', 'a') || tag.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
+            if (parsed && parsed !== '-') set.add(parsed);
+          }
+        });
+      }
+    });
+
+    // 2. Collect from searched results (UC-TAL / Live search)
+    uctalResults.forEach(item => {
+      if (item.subject && item.subject !== '-') set.add(item.subject.trim());
+      if (item.subject_650a && item.subject_650a !== '-') set.add(item.subject_650a.trim());
+      if (Array.isArray(item.all650Subjects)) {
+        item.all650Subjects.forEach((s: string) => {
+          if (s && s !== '-') set.add(s.trim());
+        });
+      }
+      if (Array.isArray(item.marcRaw)) {
+        item.marcRaw.forEach((tag: any) => {
+          if (tag.tagID === '650' || tag.tag === '650') {
+            const parsed = parseMarcSubfield(tag.data || '', 'a') || tag.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
+            if (parsed && parsed !== '-') set.add(parsed);
+          }
+        });
+      }
+    });
+
+    return Array.from(set).filter(Boolean);
+  }, [records, uctalResults]);
+
+  // Dynamic available storage locations collected across all records + standard list
+  const allAvailableStorageLocations = React.useMemo(() => {
+    const set = new Set<string>(DEFAULT_STORAGE_LOCATIONS);
+    records.forEach(r => {
+      if (r.storage_location && r.storage_location !== '-') set.add(r.storage_location.trim());
+    });
+    return Array.from(set).filter(Boolean);
+  }, [records]);
+
+  // Handle inline change of storage_location from dropdown
+  const handleStorageLocationChange = (recordId: string, newLocation: string) => {
+    setRecords(prev => prev.map(r => r.id === recordId ? { ...r, storage_location: newLocation } : r));
+    showToast(`📍 อัปเดตสถานที่จัดเก็บเป็น "${newLocation}" เรียบร้อยแล้ว`);
+  };
+
+  // Handle inline change of 650 $a from dropdown
+  const handleSubjectChange = (recordId: string, newSubject: string) => {
+    setRecords(prev => prev.map(r => r.id === recordId ? { ...r, subject_650a: newSubject } : r));
+    showToast(`🏷️ อัปเดตหัวเรื่อง 650 $a เป็น "${newSubject}" เรียบร้อยแล้ว`);
+  };
+
+  // Handle inline change of 700 (ผู้แปล / ผู้แต่งร่วม) from dropdown
+  const handleAddedEntry700Change = (recordId: string, newVal: string) => {
+    const formatted = formatAddedEntry700(newVal);
+    setRecords(prev => prev.map(r => {
+      if (r.id !== recordId) return r;
+      let updatedTags = Array.isArray(r.marc_tags) ? [...r.marc_tags] : [];
+      if (formatted !== '-') {
+        const idx700 = updatedTags.findIndex(t => t.tagID === '700' || (t as any).tag === '700');
+        const tagObj = { tagID: '700', indc1: '1', indc2: '', data: `$a${formatted}` };
+        if (idx700 >= 0) updatedTags[idx700] = tagObj;
+        else updatedTags.push(tagObj);
+      } else {
+        updatedTags = updatedTags.filter(t => t.tagID !== '700' && (t as any).tag !== '700');
+      }
+      return {
+        ...r,
+        added_entry_700: formatted,
+        marc_tags: updatedTags
+      };
+    }));
+    showToast(`👥 อัปเดต Tag 700 เป็น "${formatted}" เรียบร้อยแล้ว`);
+  };
+
+  // Load saved records from localStorage on initial render
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('iabs_marc21_records');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setRecords(parsed);
+          if (parsed.length > 0) {
+            const maxAcc = parsed.reduce((max, r) => {
+              const num = parseInt(r.accession_no, 10);
+              return !isNaN(num) && num > max ? num : max;
+            }, 2612);
+            setStartAccNum(Math.max(maxAcc + 1, 2613));
+          }
+          return;
+        }
+      }
+      setRecords([]);
+    } catch {
+      setRecords([]);
+    }
+  }, []);
+
+  // Save records to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem('iabs_marc21_records', JSON.stringify(records));
+      if (records.length > 0) {
+        const maxAcc = records.reduce((max, r) => {
+          const num = parseInt(r.accession_no, 10);
+          return !isNaN(num) && num > max ? num : max;
+        }, 2612);
+        setStartAccNum(Math.max(maxAcc + 1, 2613));
+      }
+    } catch {}
+  }, [records]);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3500);
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    if (!text || text === '-') return;
+    navigator.clipboard.writeText(text);
+    showToast(`📋 คัดลอก ${label} "${text}" เรียบร้อยแล้ว`);
+  };
+
+  const loadInitialSamples = () => {
+    const samples: Marc21Record[] = [
+      {
+        id: 'sample_1',
+        date: '24/6/2022',
+        col1: '',
+        accession_no: '0000002613',
+        isbn: '9786163930446',
+        author_personal: 'อัมรา เรืองศิริ.',
+        author_corporate: '-',
+        title_245a: 'ทุกมื้ออร่อยจัง',
+        title_245b: '-',
+        responsibility_245c: 'อัมรา เรืองศิริ.',
+        ddc_082a: 'ด',
+        cutter_082b: 'อ212ท',
+        pub_place: 'กรุงเทพฯ',
+        publisher: 'Sook Publishing',
+        pub_year: '2559',
+        pages_300a: '24 หน้า',
+        illustration_300b: 'ภาพสี',
+        subject_650a: 'นิทานภาพ',
+        copies: '1',
+        summary_520: 'ทุกมื้ออร่อยจัง อาหารแต่ละมื้อในหนึ่งวัน มีความสำคัญต่างกัน หนังสือเล่มนี้จะช่วยให้เด็กๆ มีความสุขกับการกินอาหาร รวมถึงบรรยากาศในช่วงระหว่างรับประทานอาหาร',
+        edition_250: 'พิมพ์ครั้งที่ 2',
+        price_541: '30 บาท',
+        series_490: '-',
+        added_entry_700: '-',
+        acquisition_source: 'สั่งซื้อ',
+        col2: '',
+        source_type: 'สั่งชื้อ',
+        storage_location: 'สำหรับเด็ก',
+        status: 'อยู่บนชั้น',
+        col3: '',
+        leader_000: '00933nam  2200289ua 4500',
+        control_001: 'b0002613',
+        control_003: 'UCTAL',
+        trans_005: '25650624103000.0',
+        fixed_008: '220624s2559    th a   j      000 1 tha d',
+        issn_022: '-',
+        cat_source_040: 'UCTAL',
+        language_041: 'tha',
+        title_varying_246: '-',
+        dimensions_300c: '20 ซม.',
+        note_general_500: '-',
+        note_bib_504: '-',
+        note_contents_505: '-',
+        subject_person_600: '-',
+        subject_corp_610: '-',
+        subject_uniform_630: 'สำหรับเด็ก',
+        subject_geo_651: '-',
+        subject_650_2: 'อาหารและโภชนาการสำหรับเด็ก.',
+        added_corp_710: '-',
+        added_title_740: '-',
+        series_uniform_830: '-',
+        electronic_856: '-',
+        local_907: 'b0000002613'
+      },
+      {
+        id: 'sample_2',
+        date: '24/6/2022',
+        col1: '',
+        accession_no: '0000002614',
+        isbn: '9786160401628',
+        author_personal: 'Oh, Joo-Young.',
+        author_corporate: '-',
+        title_245a: 'สุดยอดความคิด 70 ยอดคน = 70 ยอดคน',
+        title_245b: '70 ยอดคน',
+        responsibility_245c: 'Oh, Joo-Young.',
+        ddc_082a: '155.41',
+        cutter_082b: 'ฮ27ส',
+        pub_place: 'กรุงเทพฯ',
+        publisher: 'นานมีบุ๊คส์',
+        pub_year: '2553',
+        pages_300a: '175 หน้า',
+        illustration_300b: 'ภาพประกอบ',
+        subject_650a: 'การดำเนินชีวิต --วรรณกรรมสำหรับเด็ก',
+        copies: '1',
+        summary_520: 'หนังสือที่จะพาเด็กๆ ไปพบกับสุดยอดความคิดอันทรงคุณค่าจาก 70 ยอดคน เรียบเรียงไว้เป็นสาขาต่างๆ กว่า 7 สาขา ทั้งที่เป็นนักสำรวจ นักประดิษฐ์ นักธุรกิจ ผู้นำประเทศ',
+        edition_250: 'พิมพ์ครั้งที่ 1',
+        price_541: '175 บาท',
+        series_490: 'เตรียมความพร้อมเพื่ออนาคต',
+        added_entry_700: 'กิตติพงศ์ คุ้มพายัพ, ผู้แปล',
+        acquisition_source: 'สั่งซื้อ',
+        col2: '',
+        source_type: 'สั่งชื้อ',
+        storage_location: 'หมวด 100',
+        status: 'อยู่บนชั้น',
+        col3: '',
+        leader_000: '00933nam  2200289ua 4500',
+        control_001: 'b0002614',
+        control_003: 'UCTAL',
+        trans_005: '25650624103100.0',
+        fixed_008: '220624s2553    th a   j      000 1 tha d',
+        issn_022: '-',
+        cat_source_040: 'UCTAL',
+        language_041: 'tha',
+        title_varying_246: '70 ยอดคน',
+        dimensions_300c: '21 ซม.',
+        note_general_500: '-',
+        note_bib_504: '-',
+        note_contents_505: '-',
+        subject_person_600: '-',
+        subject_corp_610: '-',
+        subject_uniform_630: 'เยาวชน',
+        subject_geo_651: '-',
+        subject_650_2: 'ชีวประวัติ--สำหรับเด็ก.',
+        added_corp_710: '-',
+        added_title_740: '-',
+        series_uniform_830: 'เตรียมความพร้อมเพื่ออนาคต',
+        electronic_856: '-',
+        local_907: 'b0000002614'
+      },
+      {
+        id: 'sample_3',
+        date: '24/6/2022',
+        col1: '',
+        accession_no: '0000002615',
+        isbn: '9786160405886',
+        author_personal: 'แม็กเกรเกอร์, ซินเทีย.',
+        author_corporate: '-',
+        title_245a: "ปัญหาแค่นี้ฉันรับมือได้ = Think for yourself : a kid's guide to solving life's dilemmas",
+        title_245b: "Think for yourself : a kid's guide to solving life's dilemmas",
+        responsibility_245c: 'แม็กเกรเกอร์, ซินเทีย.',
+        ddc_082a: '155.4',
+        cutter_082b: 'ม611ป',
+        pub_place: 'กรุงเทพฯ',
+        publisher: 'นานมีบุ๊คส์',
+        pub_year: '2554',
+        pages_300a: '88 หน้า',
+        illustration_300b: 'ภาพประกอบ',
+        subject_650a: 'จิตวิทยาเด็ก',
+        copies: '1',
+        summary_520: 'คู่มือแก้ไขปัญหาและสถานการณ์ที่กลืนไม่เข้าคายไม่ออกสำหรับเด็กและเยาวชน',
+        edition_250: 'พิมพ์ครั้งที่ 1',
+        price_541: '115 บาท',
+        series_490: '-',
+        added_entry_700: 'วารยา, ผู้แปล',
+        acquisition_source: 'สั่งซื้อ',
+        col2: '',
+        source_type: 'สั่งชื้อ',
+        storage_location: 'หมวด 100',
+        status: 'อยู่บนชั้น',
+        col3: '',
+        leader_000: '00933nam  2200289ua 4500',
+        control_001: 'b0002615',
+        control_003: 'UCTAL',
+        trans_005: '25650624103200.0',
+        fixed_008: '220624s2554    th a   j      000 1 tha d',
+        issn_022: '-',
+        cat_source_040: 'UCTAL',
+        language_041: 'tha',
+        title_varying_246: "Think for yourself : a kid's guide",
+        dimensions_300c: '19 ซม.',
+        note_general_500: '-',
+        note_bib_504: '-',
+        note_contents_505: '-',
+        subject_person_600: '-',
+        subject_corp_610: '-',
+        subject_uniform_630: 'เยาวชน',
+        subject_geo_651: '-',
+        subject_650_2: 'การแก้ปัญหาในเด็ก.',
+        added_corp_710: '-',
+        added_title_740: '-',
+        series_uniform_830: '-',
+        electronic_856: '-',
+        local_907: 'b0000002615'
+      },
+      {
+        id: 'sample_4',
+        date: '24/6/2022',
+        col1: '',
+        accession_no: '0000002616',
+        isbn: '9786160838325',
+        author_personal: 'จักรพงษ์ เมษพันธุ์.',
+        author_corporate: '-',
+        title_245a: "พ่อรวยสอนลูก เล่ม 2 : เงินสี่ด้าน = Rich Dad's Cashflow Quadrant",
+        title_245b: "Rich Dad's Cashflow Quadrant",
+        responsibility_245c: 'จักรพงษ์ เมษพันธุ์, อารีนา แยนา และธนพร ศิริอัครกรกุล.',
+        ddc_082a: '332.024',
+        cutter_082b: 'จ111พ',
+        pub_place: 'กรุงเทพฯ',
+        publisher: 'ซีเอ็ดยูเคชั่น',
+        pub_year: '2563',
+        pages_300a: '384 หน้า',
+        illustration_300b: 'ภาพประกอบ',
+        subject_650a: 'การเงินส่วนบุคคล',
+        copies: '1',
+        summary_520: 'หนังสือที่จะเผยความลับว่าทำไมคนที่อยู่ในด้าน B และ I จึงหาเงินได้มากกว่า ทำงานน้อยกว่า และเสียภาษีน้อยกว่าคนที่อยู่ในด้าน E และ S',
+        edition_250: 'พิมพ์ครั้งที่ 1',
+        price_541: '290 บาท',
+        series_490: '-',
+        added_entry_700: 'จักรพงษ์ เมษพันธุ์, ผู้แปล',
+        acquisition_source: 'สั่งซื้อ',
+        col2: '',
+        source_type: 'สั่งชื้อ',
+        storage_location: 'หมวด 300 สังคมศาสตร์',
+        status: 'อยู่บนชั้น',
+        col3: '',
+        leader_000: '00933nam  2200289ua 4500',
+        control_001: 'b0002616',
+        control_003: 'UCTAL',
+        trans_005: '25650624103300.0',
+        fixed_008: '220624s2563    th a   j      000 1 tha d',
+        issn_022: '-',
+        cat_source_040: 'UCTAL',
+        language_041: 'tha',
+        title_varying_246: "Rich Dad's Cashflow Quadrant",
+        dimensions_300c: '21 ซม.',
+        note_general_500: '-',
+        note_bib_504: '-',
+        note_contents_505: '-',
+        subject_person_600: '-',
+        subject_corp_610: '-',
+        subject_uniform_630: '-',
+        subject_geo_651: '-',
+        subject_650_2: 'การลงทุนส่วนบุคคล.',
+        added_corp_710: '-',
+        added_title_740: '-',
+        series_uniform_830: '-',
+        electronic_856: '-',
+        local_907: 'b0000002616'
+      }
+    ];
+    setRecords(samples);
+    setStartAccNum(2617);
+  };
+
+  // --- Search / Generate handler ---
+  const handleGenerate = async (queryList: string[]) => {
+    if (queryList.length === 0) return;
+    setIsLoading(true);
+    setStatusMessage(`กำลังค้นหาข้อมูลจากอินเทอร์เน็ตและฐานข้อมูลห้องสมุด (${queryList.length} รายการ)...`);
+
+    // Helper for fallback generation
+    const executeFallbackGeneration = (sourceLabel = 'สร้างแบบอัตโนมัติ (Cataloging Fallback)') => {
+      const existingUsed = new Set(records.map(r => parseInt(r.accession_no, 10)).filter(n => !isNaN(n)));
+      let runAcc = Math.max(startAccNum, 2613);
+      const fallbackRecords: Marc21Record[] = [];
+
+      for (let i = 0; i < queryList.length; i++) {
+        const item = queryList[i];
+        const cleanIsbn = item.replace(/[^0-9X]/gi, '');
+        const isIsbn = cleanIsbn.length === 10 || cleanIsbn.length === 13;
+        
+        while (runAcc <= 2612 || existingUsed.has(runAcc)) {
+          runAcc++;
+        }
+        const accNo = String(runAcc).padStart(10, '0');
+        existingUsed.add(runAcc);
+        runAcc++;
+
+        const authorGuess = 'ไม่ระบุผู้แต่ง';
+        const ddcGuess = isIsbn ? '000' : (item.includes('นิทาน') ? 'ด' : (item.includes('การ์ตูน') ? 'ย' : '000'));
+        const cutterGuess = generateThaiCutter(authorGuess, item);
+
+        fallbackRecords.push({
+          id: `rec_${Date.now()}_${i}`,
+          date: new Date().toLocaleDateString('th-TH'),
+          col1: '',
+          accession_no: accNo,
+          isbn: isIsbn ? cleanIsbn : '',
+          author_personal: `${authorGuess}.`,
+          author_corporate: '-',
+          title_245a: `${item}`,
+          title_245b: '',
+          responsibility_245c: authorGuess,
+          ddc_082a: ddcGuess,
+          cutter_082b: cutterGuess,
+          pub_place: 'กรุงเทพฯ',
+          publisher: 'ไม่ระบุสำนักพิมพ์',
+          pub_year: '2567',
+          pages_300a: '160 หน้า',
+          illustration_300b: 'ภาพประกอบ',
+          subject_650a: 'ทั่วไป',
+          copies: '1',
+          summary_520: `รายการบรรณานุกรมสำหรับหนังสือ ${item}`,
+          edition_250: 'พิมพ์ครั้งที่ 1',
+          price_541: '-',
+          series_490: '-',
+          added_entry_700: '-',
+          acquisition_source: 'สั่งซื้อ',
+          col2: '',
+          source_type: 'สั่งชื้อ',
+          storage_location: ddcGuess === 'ด' ? 'สำหรับเด็ก' : (ddcGuess === 'ย' ? 'เยาวชน' : 'หมวด ทั่วไป'),
+          status: 'อยู่บนชั้น',
+          col3: '',
+          search_source: sourceLabel
+        });
+      }
+
+      setRecords(prev => [...fallbackRecords, ...prev]);
+      setStartAccNum(Math.max(...Array.from(existingUsed)) + 1);
+      showToast(`✨ สร้างรายการบรรณานุกรมสำเร็จ ${fallbackRecords.length} เล่ม (เริ่ม 0000002613 ไม่มีเลขซ้ำ)`);
+      setSearchQuery('');
+      setBatchQueries('');
+      setIsBatchOpen(false);
+    };
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+      const res = await fetch('/api/generate-marc21', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queries: queryList,
+          startAccession: Math.max(startAccNum, 2613),
+          date: new Date().toLocaleDateString('th-TH')
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.records) && data.records.length > 0) {
+          // Verify and ensure no collision with existing records in table
+          const existingUsed = new Set(records.map(r => parseInt(r.accession_no, 10)).filter(n => !isNaN(n)));
+          let runAcc = Math.max(startAccNum, 2613);
+
+          const adjustedRecords = data.records.map((rec: Marc21Record) => {
+            let num = parseInt(rec.accession_no, 10);
+            if (isNaN(num) || num <= 2612 || existingUsed.has(num)) {
+              while (runAcc <= 2612 || existingUsed.has(runAcc)) {
+                runAcc++;
+              }
+              num = runAcc;
+              runAcc++;
+            }
+            existingUsed.add(num);
+            return {
+              ...rec,
+              accession_no: String(num).padStart(10, '0')
+            };
+          });
+
+          setRecords(prev => [...adjustedRecords, ...prev]);
+          setStartAccNum(Math.max(...Array.from(existingUsed)) + 1);
+          showToast(`✨ สร้างรายการบรรณานุกรมสำเร็จ ${adjustedRecords.length} รายการ (เริ่มหลัง 0000002612 ไม่มีเลขซ้ำ)`);
+          setSearchQuery('');
+          setBatchQueries('');
+          setIsBatchOpen(false);
+          return;
+        }
+      }
+
+      // If response was not ok or records empty, execute fallback
+      executeFallbackGeneration();
+
+    } catch (err: any) {
+      console.warn('Network / API note, using instant cataloging engine:', err?.message);
+      executeFallbackGeneration();
+    } finally {
+      setIsLoading(false);
+      setStatusMessage('');
+    }
+  };
+
+  // Quick single item submit
+  const handleSingleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    handleGenerate([searchQuery.trim()]);
+  };
+
+  // Dedicated UC-TAL ThaiLIS (https://uc.thailis.or.th) Search Handler
+  const handleSearchUctal = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!uctalKeyword.trim()) return;
+    setIsUctalLoading(true);
+    try {
+      const res = await fetch('/api/uctal-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keyword: uctalKeyword.trim(),
+          region: uctalRegion,
+          pageno: 1,
+          perpage: 15
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.results)) {
+          setUctalResults(data.results);
+          setUctalTotalFound(data.found ?? data.results.length);
+          if (data.results.length === 0) {
+            showToast('ℹ️ ไม่พบรายการหนังสือในฐานข้อมูล UC-TAL');
+          } else {
+            showToast(`🏛️ พบ ${data.found || data.results.length} รายการจากสหบรรณานุกรมสถาบันอุดมศึกษาไทย (UC-TAL)`);
+          }
+        } else {
+          showToast(`⚠️ ${data.error || 'ไม่สามารถค้นหาข้อมูลจาก UC-TAL ได้'}`);
+        }
+      } else {
+        showToast('⚠️ ไม่สามารถเชื่อมต่อกับบริการ UC-TAL Web Services ได้');
+      }
+    } catch (err: any) {
+      console.warn('UC-TAL search error:', err);
+      showToast('⚠️ เกิดข้อผิดพลาดในการเชื่อมต่อ UC-TAL');
+    } finally {
+      setIsUctalLoading(false);
+    }
+  };
+
+  // Import directly from UC-TAL search result into MARC21 table
+  const handleImportFromUctal = (item: any, selectedLibrary?: any) => {
+    const existingUsed = new Set(records.map(r => parseInt(r.accession_no, 10)).filter(n => !isNaN(n)));
+    let runAcc = startAccNum;
+    while (existingUsed.has(runAcc)) {
+      runAcc++;
+    }
+    const accNo = String(runAcc).padStart(10, '0');
+    
+    const ddcVal = item.ddc || item.ddc_082a || '000';
+    const rawCutterVal = item.cutter || item.cutter_082b || generateThaiCutter(item.author || item.author_personal, item.title || item.title_245a);
+    const cutterVal = String(rawCutterVal || '').replace(/\s+\d{4}$/, '').trim();
+
+    const institutionSymbol = selectedLibrary?.symbol || selectedLibrary?.locationSymbol || '';
+    const institutionName = selectedLibrary?.nameTh || selectedLibrary?.locationNameTh || '';
+
+    const catSource = institutionSymbol ? institutionSymbol : (item.cat_source_040 || 'UCTAL');
+    const searchSource = institutionName 
+      ? `สหบรรณานุกรม UC-TAL (สถาบัน: ${institutionName} [${institutionSymbol}])`
+      : (item.search_source || `สหบรรณานุกรมสถาบันอุดมศึกษาไทย (UC-TAL - ${item.librariesCount || item.libraries?.length || 1} สถาบัน)`);
+
+    // Clone and adapt marcRaw tags
+    let rawMarcList: MarcTagItem[] = [];
+    if (Array.isArray(item.marcRaw) && item.marcRaw.length > 0) {
+      rawMarcList = JSON.parse(JSON.stringify(item.marcRaw));
+    } else if (Array.isArray(item.marc_tags) && item.marc_tags.length > 0) {
+      rawMarcList = JSON.parse(JSON.stringify(item.marc_tags));
+    } else {
+      rawMarcList = generateMarcTagsFromRecord(item as Marc21Record);
+    }
+
+    if (institutionSymbol) {
+      // Tag 040
+      const idx040 = rawMarcList.findIndex(t => t.tagID === '040');
+      const tag040Obj = { tagID: '040', indc1: '', indc2: '', data: `$a${institutionSymbol}$c${institutionSymbol}` };
+      if (idx040 >= 0) rawMarcList[idx040] = tag040Obj;
+      else {
+        const insIdx = rawMarcList.findIndex(t => parseInt(t.tagID, 10) >= 41 || parseInt(t.tagID, 10) >= 100);
+        if (insIdx >= 0) rawMarcList.splice(insIdx, 0, tag040Obj);
+        else rawMarcList.push(tag040Obj);
+      }
+
+      // Tag 003
+      const idx003 = rawMarcList.findIndex(t => t.tagID === '003');
+      const tag003Obj = { tagID: '003', indc1: '', indc2: '', data: `UCTAL-${institutionSymbol}` };
+      if (idx003 >= 0) rawMarcList[idx003] = tag003Obj;
+      else rawMarcList.push(tag003Obj);
+    }
+
+    const cleanTitleObj = formatCleanMarc245Title(
+      item.title || item.title_245a || '',
+      item.title_245b || item.subtitle || '',
+      item.title_varying_246 || item.varyingTitle || ''
+    );
+
+    const newRecord: Marc21Record = {
+      id: `uctal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      date: new Date().toLocaleDateString('th-TH'),
+      col1: '',
+      accession_no: accNo,
+      isbn: item.isbn || '',
+      author_personal: item.author && item.author !== '-' ? `${item.author}.` : (item.author_personal || '-'),
+      author_corporate: item.author_corporate || '-',
+      title_245a: cleanTitleObj.formatted245a,
+      title_245b: cleanTitleObj.formatted245b,
+      responsibility_245c: item.responsibility || item.responsibility_245c || item.author || 'ไม่ระบุผู้แต่ง',
+      ddc_082a: ddcVal,
+      cutter_082b: cutterVal,
+      pub_place: (item.pubPlace || item.pub_place || 'กรุงเทพฯ').replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim(),
+      publisher: (item.publisher || 'ไม่ระบุสำนักพิมพ์').replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim(),
+      pub_year: item.pubYear || item.pub_year || '2565',
+      pages_300a: (item.pages || item.pages_300a || '160 หน้า').replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim(),
+      illustration_300b: item.illustration_300b || 'ภาพประกอบ',
+      subject_650a: item.subject || item.subject_650a || 'ทั่วไป',
+      copies: '1',
+      summary_520: item.summary || item.summary_520 || `หนังสือ "${item.title || item.title_245a}" จากฐานข้อมูลสหบรรณานุกรมสถาบันอุดมศึกษาไทย (UC-TAL)`,
+      edition_250: item.edition_250 || 'พิมพ์ครั้งที่ 1',
+      price_541: item.price_541 || '-',
+      series_490: item.series || item.series_490 || '-',
+      added_entry_700: item.added_entry_700 || '-',
+      acquisition_source: institutionName ? `สหบรรณานุกรม UC-TAL (${institutionSymbol})` : 'สั่งซื้อ',
+      col2: '',
+      source_type: 'สั่งชื้อ',
+      storage_location: ddcVal.startsWith('ด') ? 'สำหรับเด็ก' : (ddcVal.startsWith('ย') ? 'เยาวชน' : 'หมวด ทั่วไป'),
+      status: 'อยู่บนชั้น',
+      col3: '',
+      cover_image: item.coverImage || item.cover_image,
+      search_source: searchSource,
+      marc_tags: rawMarcList,
+
+      // Extended MARC tags
+      leader_000: item.leader_000 || '00933nam  2200289ua 4500',
+      control_001: item.control_001 || `b${accNo.replace(/^0+/, '')}`,
+      control_003: institutionSymbol ? `UCTAL-${institutionSymbol}` : (item.control_003 || 'UCTAL'),
+      trans_005: item.trans_005 || (new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14) + '.0'),
+      fixed_008: item.fixed_008 || `${new Date().getFullYear().toString().slice(2)}0101s${item.pubYear || item.pub_year || '2565'}    th a   j      000 1 tha d`,
+      issn_022: item.issn_022 || '-',
+      cat_source_040: catSource,
+      language_041: item.language_041 || 'tha',
+      title_varying_246: item.title_varying_246 || '-',
+      dimensions_300c: (item.dimensions_300c || '20 ซม.').replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim(),
+      note_general_500: item.note_general_500 || '-',
+      note_bib_504: item.note_bib_504 || '-',
+      note_contents_505: item.note_contents_505 || '-',
+      subject_person_600: item.subject_person_600 || '-',
+      subject_corp_610: item.subject_corp_610 || '-',
+      subject_uniform_630: item.subject_uniform_630 || '-',
+      subject_geo_651: item.subject_geo_651 || '-',
+      subject_650_2: item.subject_650_2 || '-',
+      added_corp_710: item.added_corp_710 || '-',
+      added_title_740: item.added_title_740 || '-',
+      series_uniform_830: item.series_uniform_830 || item.series || item.series_490 || '-',
+      electronic_856: item.electronic_856 || item.coverImage || item.cover_image || '-',
+      local_907: institutionSymbol ? `b${accNo}-${institutionSymbol}` : (item.local_907 || `b${accNo}`)
+    };
+
+    setRecords(prev => [newRecord, ...prev]);
+    setStartAccNum(runAcc + 1);
+    showToast(`✅ นำเข้าข้อมูลเล่ม "${newRecord.title_245a.substring(0, 30)}..." ${institutionName ? `(สถาบัน: ${institutionName})` : ''} สู่ตารางครบถ้วนทุก MARC Tag เรียบร้อย!`);
+  };
+
+  // Batch items submit
+  const handleBatchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const lines = batchQueries.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    handleGenerate(lines);
+  };
+
+  // Row selection
+  const toggleSelectRow = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === records.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(records.map(r => r.id)));
+    }
+  };
+
+  // Get exact content as displayed in table cells for copying/exporting
+  const getRecordCellText = (r: Marc21Record, key: string): string => {
+    if (key === 'responsibility_245c') {
+      return formatAuthorList245c(r.responsibility_245c, r.author_personal);
+    }
+    if (key === 'added_entry_700') {
+      return formatAddedEntry700(r.added_entry_700);
+    }
+    if (key === 'storage_location') {
+      return r.storage_location || 'สำหรับเด็ก';
+    }
+    if (key === 'subject_650a') {
+      return r.subject_650a || 'ทั่วไป';
+    }
+    if (key === 'status') {
+      return r.status || 'อยู่บนชั้น';
+    }
+    const val = (r as any)[key];
+    if (val === undefined || val === null) return '';
+    return String(val);
+  };
+
+  // Convert record to TSV string for easy pasting into Excel / Sheets (From Date to Column 3 EXTRA2)
+  const recordToTsvRow = (r: Marc21Record): string => {
+    return PRIMARY_COPY_COLUMNS.map(c => {
+      const val = getRecordCellText(r, c.key);
+      return String(val).replace(/\t/g, ' ').replace(/\n/g, ' ');
+    }).join('\t');
+  };
+
+  // Copy single row (From Column 1 to Column 3 EXTRA2)
+  const handleCopyRow = (r: Marc21Record) => {
+    const tsv = recordToTsvRow(r);
+    navigator.clipboard.writeText(tsv).then(() => {
+      showToast(`📋 คัดลอกแถว "${r.title_245a.substring(0, 30)}..." (คอลัมน์แรก - คอลัมน์3) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel`);
+    }).catch(() => {
+      showToast('⚠️ ไม่สามารถคัดลอกลงคลิปบอร์ดได้ กรุณาลองใหม่อีกครั้ง');
+    });
+  };
+
+  // Copy selected rows (From Column 1 to Column 3 EXTRA2)
+  const handleCopySelected = () => {
+    const targetRows = records.filter(r => selectedIds.has(r.id));
+    if (targetRows.length === 0) {
+      showToast('⚠️ กรุณาเลือกแถวที่ต้องการคัดลอกอย่างน้อย 1 รายการ');
+      return;
+    }
+    const tsv = targetRows.map(recordToTsvRow).join('\n');
+    navigator.clipboard.writeText(tsv).then(() => {
+      showToast(`📋 คัดลอก ${targetRows.length} รายการที่เลือก (คอลัมน์แรก - คอลัมน์3) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel`);
+    });
+  };
+
+  // Shared helper to cleanly sync/upsert a Marc21Record to Supabase with automatic deduplication
+  const syncBookRecordToSupabase = async (r: Marc21Record) => {
+    const cleanTitle = r.title_245a.split(' / ')[0].trim();
+    const cleanAuthor = r.author_personal.replace(/\.$/, '').trim();
+    const cleanIsbn = r.isbn ? r.isbn.trim() : '';
+
+    // 1. Resolve or reuse stable database primary key
+    let targetBookId = r.db_id || '';
+
+    if (!targetBookId) {
+      if (cleanIsbn) {
+        const { data: isbnMatches } = await supabase
+          .from('books')
+          .select('id')
+          .eq('isbn', cleanIsbn)
+          .limit(1);
+        if (isbnMatches && isbnMatches.length > 0) {
+          targetBookId = isbnMatches[0].id;
+        }
+      }
+
+      if (!targetBookId && cleanTitle) {
+        const { data: titleMatches } = await supabase
+          .from('books')
+          .select('id')
+          .eq('title', cleanTitle)
+          .limit(1);
+        if (titleMatches && titleMatches.length > 0) {
+          targetBookId = titleMatches[0].id;
+        }
+      }
+    }
+
+    if (!targetBookId) {
+      const cleanAcc = r.accession_no ? r.accession_no.replace(/^0+/, '') : '';
+      targetBookId = `book_reg_${cleanAcc || Date.now()}`;
+    }
+
+    r.db_id = targetBookId;
+
+    const payload = {
+      id: targetBookId,
+      title: cleanTitle,
+      subtitle: r.title_245b || '',
+      author: cleanAuthor,
+      isbn: cleanIsbn,
+      barcode: r.accession_no,
+      accession_no: r.accession_no,
+      publisher: r.publisher,
+      publication_place: r.pub_place,
+      publication_year: r.pub_year,
+      pages: r.pages_300a,
+      ddc: r.ddc_082a,
+      call_number: `${r.ddc_082a} ${r.cutter_082b}`.trim(),
+      category: r.storage_location || r.subject_650a || 'ทั่วไป',
+      subject: r.subject_650a,
+      description: r.summary_520,
+      status: r.status,
+      edition: r.edition_250,
+      price: r.price_541,
+      series: r.series_490,
+      translator: r.added_entry_700 !== '-' ? r.added_entry_700 : '',
+      illustration: r.illustration_300b,
+      updated_at: new Date().toISOString()
+    };
+
+    // 2. Clean up any existing duplicate rows in Supabase with the same title but different ID (e.g. old accession_no IDs)
+    try {
+      if (cleanTitle) {
+        const { data: dupRows } = await supabase
+          .from('books')
+          .select('id')
+          .eq('title', cleanTitle)
+          .neq('id', targetBookId);
+
+        if (dupRows && dupRows.length > 0) {
+          const dupIds = dupRows.map(d => d.id);
+          await supabase.from('books').delete().in('id', dupIds);
+          await supabase.from('book_customizations').delete().in('id', dupIds);
+        }
+      }
+    } catch (e) {
+      console.warn('Deduplication cleanup note:', e);
+    }
+
+    // 3. Upsert the payload into Supabase
+    await supabase.from('books').upsert(payload, { onConflict: 'id' });
+
+    // 4. ALSO POST to Express Server API so it instantly updates server cache and broadcasts real-time
+    try {
+      await fetch('/api/books', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    } catch (apiErr) {
+      console.warn('Backup Express API sync note:', apiErr);
+    }
+
+    return payload;
+  };
+
+  // Save selected records (or all if none selected) to Supabase database
+  const handleSaveSelectedToDatabase = async () => {
+    const targetRows = selectedIds.size > 0 
+      ? records.filter(r => selectedIds.has(r.id))
+      : records;
+
+    if (targetRows.length === 0) {
+      showToast('⚠️ กรุณาเลือกรายการที่ต้องการบันทึกลงฐานข้อมูลอย่างน้อย 1 รายการ');
+      return;
+    }
+
+    setIsLoading(true);
+    setStatusMessage(`กำลังบันทึกข้อมูล ${targetRows.length} รายการลงฐานข้อมูลห้องสมุด...`);
+    let count = 0;
+    try {
+      for (const r of targetRows) {
+        await syncBookRecordToSupabase(r);
+        count++;
+      }
+      showToast(`💾 บันทึกรายการ ${count} เล่ม ลงฐานข้อมูลห้องสมุดเรียบร้อยแล้ว!`);
+      if (onBookAddedToLibrary) onBookAddedToLibrary();
+    } catch (err: any) {
+      showToast(`⚠️ เกิดข้อผิดพลาดในการบันทึก: ${err?.message || err}`);
+    } finally {
+      setIsLoading(false);
+      setStatusMessage('');
+    }
+  };
+
+  // Trigger Delete Selected Confirmation
+  const handleDeleteSelected = () => {
+    if (selectedIds.size === 0) {
+      showToast('⚠️ กรุณาเลือกรายการที่ต้องการลบอย่างน้อย 1 รายการ');
+      return;
+    }
+    setDeleteConfirmTarget('selected');
+  };
+
+  // Perform actual deletion of selected records after confirmation
+  const confirmDeleteSelectedExecution = () => {
+    const deletedCount = selectedIds.size;
+    setRecords(prev => prev.filter(r => !selectedIds.has(r.id)));
+    setSelectedIds(new Set());
+    setDeleteConfirmTarget(null);
+    showToast(`🗑️ ลบรายการที่เลือกจำนวน ${deletedCount} รายการเรียบร้อยแล้ว`);
+  };
+
+  // Copy all rows (From Column 1 to Column 3 EXTRA2)
+  const handleCopyAll = (includeHeaders = false) => {
+    if (records.length === 0) {
+      showToast('⚠️ ไม่มีข้อมูลในตารางสำหรับคัดลอก');
+      return;
+    }
+    const headerLine = PRIMARY_COPY_COLUMNS.map(c => c.label.replace(/\n/g, ' ')).join('\t');
+    const rowsTsv = records.map(recordToTsvRow).join('\n');
+    const fullTsv = includeHeaders ? `${headerLine}\n${rowsTsv}` : rowsTsv;
+
+    navigator.clipboard.writeText(fullTsv).then(() => {
+      showToast(`📋 คัดลอกข้อมูลทั้งหมด ${records.length} แถว (คอลัมน์แรก - คอลัมน์3 EXTRA2) ลงคลิปบอร์ดสำเร็จ! พร้อมวางใน Excel`);
+    });
+  };
+
+  // Export to Excel (.xlsx) using SheetJS
+  const handleExportExcel = () => {
+    if (records.length === 0) {
+      showToast('⚠️ ไม่มีข้อมูลสำหรับดาวน์โหลด');
+      return;
+    }
+
+    const header = MARC21_COLUMNS.map(c => c.label);
+    const dataRows = records.map(r => MARC21_COLUMNS.map(c => getRecordCellText(r, c.key)));
+
+    const worksheet = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'MARC21_Catalog');
+
+    const fileName = `MARC21_Catalog_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(workbook, fileName);
+    showToast(`📥 ดาวน์โหลดไฟล์ Excel "${fileName}" (ครบทุก MARC Tag) เรียบร้อยแล้ว!`);
+  };
+
+  // Export to CSV
+  const handleExportCsv = () => {
+    if (records.length === 0) {
+      showToast('⚠️ ไม่มีข้อมูลสำหรับดาวน์โหลด');
+      return;
+    }
+    const header = MARC21_COLUMNS.map(c => `"${c.label.replace(/"/g, '""')}"`).join(',');
+    const rows = records.map(r => {
+      return MARC21_COLUMNS.map(c => `"${String(getRecordCellText(r, c.key)).replace(/"/g, '""')}"`).join(',');
+    }).join('\n');
+
+    // UTF-8 BOM for Thai support in Microsoft Excel
+    const blob = new Blob(['\uFEFF' + header + '\n' + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `MARC21_Catalog_${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    showToast('📥 ดาวน์โหลดไฟล์ CSV ภาษาไทย (ครบทุก MARC Tag) เรียบร้อยแล้ว!');
+  };
+
+  // Duplicate accession detection in current table
+  const duplicateAccMap = React.useMemo(() => {
+    const counts: Record<string, number> = {};
+    records.forEach(r => {
+      const num = parseInt(r.accession_no, 10);
+      const clean = !isNaN(num) ? String(num) : (r.accession_no?.trim() || '');
+      if (clean) counts[clean] = (counts[clean] || 0) + 1;
+    });
+    return counts;
+  }, [records]);
+
+  const hasDuplicateOrInvalidAcc = React.useMemo(() => {
+    return records.some(r => {
+      const num = parseInt(r.accession_no, 10);
+      const clean = !isNaN(num) ? String(num) : (r.accession_no?.trim() || '');
+      return (duplicateAccMap[clean] || 0) > 1;
+    });
+  }, [records, duplicateAccMap]);
+
+  // Re-number all records sequentially starting from custom startAccNum
+  const handleAutoRenumber = (customStart?: number) => {
+    if (records.length === 0) {
+      showToast('⚠️ ไม่มีข้อมูลในตารางสำหรับจัดเรียงเลขทะเบียน');
+      return;
+    }
+    const base = customStart !== undefined && !isNaN(customStart) ? customStart : startAccNum;
+    const updated = records.map((r, i) => ({
+      ...r,
+      accession_no: String(base + i).padStart(10, '0')
+    }));
+    setRecords(updated);
+    setStartAccNum(base + records.length);
+    showToast(`🔢 จัดเรียงเลขทะเบียนใหม่ ${records.length} แถว (เริ่ม ${String(base).padStart(10, '0')} ต่อเนื่อง ไม่มีเลขซ้ำ) สำเร็จ!`);
+  };
+
+  // Add empty row
+  const handleAddEmptyRow = () => {
+    const used = new Set(records.map(r => parseInt(r.accession_no, 10)).filter(n => !isNaN(n)));
+    let nextNum = startAccNum;
+    while (used.has(nextNum)) {
+      nextNum++;
+    }
+    const nextAcc = String(nextNum).padStart(10, '0');
+    const newRecord: Marc21Record = {
+      id: `manual_${Date.now()}`,
+      date: new Date().toLocaleDateString('th-TH'),
+      col1: '',
+      accession_no: nextAcc,
+      isbn: '',
+      author_personal: '',
+      author_corporate: '-',
+      title_245a: '',
+      title_245b: '',
+      responsibility_245c: '',
+      ddc_082a: '',
+      cutter_082b: '',
+      pub_place: 'กรุงเทพฯ',
+      publisher: '',
+      pub_year: '2567',
+      pages_300a: '',
+      illustration_300b: 'ภาพประกอบ',
+      subject_650a: '',
+      copies: '1',
+      summary_520: '',
+      edition_250: 'พิมพ์ครั้งที่ 1',
+      price_541: '-',
+      series_490: '-',
+      added_entry_700: '-',
+      acquisition_source: 'สั่งซื้อ',
+      col2: '',
+      source_type: 'สั่งชื้อ',
+      storage_location: 'หมวด 100',
+      status: 'อยู่บนชั้น',
+      col3: ''
+    };
+    setRecords(prev => [newRecord, ...prev]);
+    setStartAccNum(nextNum + 1);
+    setEditingRecord(newRecord);
+  };
+
+  // Delete row immediately without showing any confirmation dialog
+  const handleDeleteRow = async (id: string) => {
+    const target = records.find(r => r.id === id);
+    setRecords(prev => prev.filter(r => r.id !== id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+    if (target) {
+      const bookId = target.db_id || `book_reg_${target.accession_no.replace(/^0+/, '') || target.isbn || ''}`;
+      try {
+        await supabase.from('books').delete().eq('id', bookId);
+        await supabase.from('book_customizations').delete().eq('id', bookId);
+        await fetch(`/api/books/${bookId}`, { method: 'DELETE' });
+      } catch {}
+    }
+
+    showToast('🗑️ ลบแถวเรียบร้อยแล้ว');
+  };
+
+  // Sync to Supabase
+  const handleSyncToLibrary = async (r: Marc21Record) => {
+    try {
+      const payload = await syncBookRecordToSupabase(r);
+      showToast(`💾 บันทึกเล่ม "${payload.title}" เข้าสู่ระบบห้องสมุดเรียบร้อยแล้ว!`);
+      if (onBookAddedToLibrary) onBookAddedToLibrary();
+    } catch (e: any) {
+      showToast(`⚠️ เกิดข้อผิดพลาดในการบันทึก: ${e.message}`);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Toast Alert */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl border border-slate-700 flex items-center space-x-3 text-sm font-medium animate-bounce">
+          <Check className="h-5 w-5 text-emerald-400 shrink-0" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {/* Header Banner */}
+      <div className="bg-gradient-to-r from-emerald-800 via-teal-800 to-slate-900 text-white p-6 sm:p-8 rounded-3xl shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="space-y-2 max-w-2xl">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-semibold backdrop-blur-md border border-emerald-400/30">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>AI MARC 21 Cataloging & Excel Generator</span>
+            </div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+              สร้างรายการบรรณานุกรมอัตโนมัติ (MARC 21)
+            </h1>
+            <p className="text-emerald-100/80 text-xs sm:text-sm leading-relaxed">
+              สืบค้นข้อมูลหนังสือด้วย ISBN หรือชื่อเรื่อง ผ่าน Google Grounding, ฐานข้อมูลห้องสมุดสถาบันอุดมศึกษา Z39.50 / SRU, TK Park OPAC และหอสมุดแห่งชาติ แล้วถอดรหัสเป็นตาราง Excel มาตรฐาน MARC 21 ครบ 29 คอลัมน์
+            </p>
+
+            {/* Supported Data Sources Pill */}
+            <div className="pt-1 flex flex-wrap items-center gap-2 text-[11px]">
+              <a
+                href="https://uc.thailis.or.th"
+                target="_blank"
+                rel="noreferrer"
+                className="px-2.5 py-1 rounded-lg bg-emerald-500/30 text-emerald-100 border border-emerald-400/40 flex items-center gap-1 hover:bg-emerald-500/50 transition font-bold"
+                title="เข้าสู่ระบบสหบรรณานุกรมห้องสมุดสถาบันอุดมศึกษาไทย (UC-TAL)"
+              >
+                <span>🇹🇭 สหบรรณานุกรมสถาบันอุดมศึกษาไทย (UC-TAL / ThaiLIS)</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+              <span className="px-2.5 py-1 rounded-lg bg-white/10 text-emerald-200 border border-white/10 flex items-center gap-1">
+                <span>🌐 Google Search Grounding</span>
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-white/10 text-emerald-200 border border-white/10 flex items-center gap-1">
+                <span>📚 TK Park OPAC & หอสมุดแห่งชาติ</span>
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => setIsCutterTableOpen(true)}
+              className="px-3.5 py-2.5 bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-100 rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-emerald-400/40 transition flex items-center gap-2 shadow-sm cursor-pointer"
+            >
+              <BookOpen className="w-4 h-4 text-amber-300" />
+              <span>ตารางเลขคัตเตอร์ (TK, จุฬา, มอ.)</span>
+            </button>
+            <button
+              onClick={() => setIsBatchOpen(true)}
+              className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-white/20 transition flex items-center gap-2 shadow-sm cursor-pointer"
+            >
+              <Layers className="w-4 h-4 text-emerald-300" />
+              <span>สร้างเป็นชุด (Batch)</span>
+            </button>
+            <button
+              onClick={handleAddEmptyRow}
+              className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2 shadow-lg shadow-emerald-950/20 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>เพิ่มแถวเปล่า</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Duplicate / Invalid Alert Banner */}
+      {hasDuplicateOrInvalidAcc && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 p-3 rounded-xl flex items-center justify-between gap-3 text-xs font-medium animate-pulse">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>ตรวจพบเลขทะเบียนที่มีรายการซ้ำกันในตาราง</span>
+          </div>
+          <button
+            onClick={() => handleAutoRenumber()}
+            className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-xs transition cursor-pointer"
+          >
+            กดจัดเรียงใหม่ทันที
+          </button>
+        </div>
+      )}
+
+      {/* UC-TAL Services Search Box (Dedicated ThaiLIS https://uc.thailis.or.th Search Box) */}
+      <div className="bg-gradient-to-br from-indigo-950 via-slate-900 to-slate-950 text-white p-5 sm:p-6 rounded-3xl shadow-xl border border-indigo-500/30 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-white/10">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-400 text-slate-950 font-black shadow-lg shadow-amber-500/20">
+              <Library className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base sm:text-lg font-extrabold tracking-tight text-white flex items-center gap-2" id="UC-heade-text">
+                  <span>UC-TAL Search</span>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-300 border border-amber-400/30">
+                    Web Services (REST)
+                  </span>
+                </h2>
+              </div>
+              <p className="text-xs text-indigo-200/80">
+                สืบค้นข้อมูลบรรณานุกรมและแท็ก MARC 21 จากสหบรรณานุกรมสถาบันอุดมศึกษาไทย (<a href="https://uc.thailis.or.th" target="_blank" rel="noreferrer" className="underline hover:text-white">uc.thailis.or.th</a>)
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsUctalPanelOpen(!isUctalPanelOpen)}
+              className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+            >
+              {isUctalPanelOpen ? (
+                <>
+                  <ChevronUp className="w-4 h-4" />
+                  <span>ซ่อนผลลัพธ์ ({uctalResults.length})</span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-4 h-4" />
+                  <span>แสดงผลลัพธ์ ({uctalResults.length})</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Search Inputs: Keyword & Library Scope Dropdown matching Image 1 */}
+        <form onSubmit={handleSearchUctal} className="grid grid-cols-1 sm:grid-cols-12 gap-3" id="uctal-search">
+          <div className="sm:col-span-6 relative">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <input
+              type="text"
+              id="TxtUCsearch"
+              value={uctalKeyword}
+              onChange={(e) => setUctalKeyword(e.target.value)}
+              placeholder="Enter keyword / ISBN / Title / Author (เช่น โต๊ะโตะจัง, สุดยอดความคิด, 9786160401628)..."
+              className="w-full pl-10 pr-4 py-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-xs sm:text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:bg-slate-800 transition"
+              disabled={isUctalLoading}
+            />
+          </div>
+
+          <div className="sm:col-span-3">
+            <select
+              value={uctalRegion}
+              onChange={(e) => setUctalRegion(e.target.value)}
+              className="w-full px-3 py-2.5 bg-slate-800/80 border border-slate-700 rounded-xl text-xs sm:text-sm text-white focus:outline-none focus:ring-2 focus:ring-amber-400 cursor-pointer"
+              disabled={isUctalLoading}
+            >
+              <option value="">All libraries (ทุกสถาบันอุดมศึกษา)</option>
+              <option value="1">1=ภาคกลาง (กทม.และปริมณฑล: CU, TU, MU, SU, KU...)</option>
+              <option value="2">2=ภาคเหนือ (CMU, CMRU, MJU...)</option>
+              <option value="3">3=ภาคตะวันออกเฉียงเหนือ (KKU, MSU, UBU...)</option>
+              <option value="4">4=ภาคใต้ (PSU, WU, TSU, SKRU...)</option>
+            </select>
+          </div>
+
+          <div className="sm:col-span-3 flex items-center gap-2">
+            <button
+              type="submit"
+              id="BtnUCsearch"
+              disabled={isUctalLoading || !uctalKeyword.trim()}
+              className="w-full py-2.5 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-extrabold text-xs sm:text-sm rounded-xl transition shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 cursor-pointer shrink-0"
+            >
+              {isUctalLoading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin text-slate-950" />
+                  <span>กำลังสืบค้น...</span>
+                </>
+              ) : (
+                <>
+                  <Search className="w-4 h-4 text-slate-950" />
+                  <span>ค้นหาใน UC-TAL</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+
+        {/* UC-TAL Results List */}
+        {(isUctalPanelOpen || uctalResults.length > 0) && uctalResults.length > 0 && (
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center justify-between text-xs text-indigo-200">
+              <span>ผลการสืบค้นจาก UC-TAL ทั้งหมด {uctalTotalFound ?? uctalResults.length} รายการ:</span>
+              <span className="text-[11px] text-amber-300">กดปุ่ม "➕ นำเข้าตาราง MARC 21" เพื่อเพิ่มลงในตารางหลักทันที</span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-96 overflow-y-auto pr-1">
+              {uctalResults.map((item, i) => (
+                <div
+                  key={item.bibId || i}
+                  className="p-3.5 bg-slate-800/90 border border-slate-700/80 rounded-2xl flex flex-col justify-between gap-3 hover:border-amber-400/60 transition shadow-sm"
+                >
+                  <div className="flex items-start gap-3">
+                    {item.coverImage ? (
+                      <img
+                        src={item.coverImage}
+                        alt={item.title}
+                        className="w-14 h-20 object-cover rounded-lg shadow-md border border-slate-700 shrink-0"
+                        onError={(e: any) => { e.currentTarget.style.display = 'none'; }}
+                      />
+                    ) : (
+                      <div className="w-14 h-20 bg-slate-700/50 rounded-lg flex items-center justify-center text-slate-400 text-xs shrink-0">
+                        <BookOpen className="w-6 h-6 opacity-40" />
+                      </div>
+                    )}
+
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <h4 className="text-xs sm:text-sm font-bold text-white line-clamp-2" title={item.title}>
+                        {item.title}
+                      </h4>
+                      <p className="text-xs text-slate-300 truncate">
+                        <span className="text-slate-400">ผู้แต่ง:</span> {item.author || item.responsibility || '-'}
+                      </p>
+                      <p className="text-xs text-slate-300 truncate">
+                        <span className="text-slate-400">สำนักพิมพ์:</span> {item.publisher || '-'} ({item.pubYear || '-'})
+                      </p>
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[11px]">
+                        {item.isbn && (
+                          <span className="px-1.5 py-0.5 rounded bg-slate-700 text-indigo-300 font-mono">
+                            ISBN: {item.isbn}
+                          </span>
+                        )}
+                        {item.ddc && item.ddc !== '000' && (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono">
+                            DDC: {item.ddc}
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 font-bold">
+                          🏛️ {item.librariesCount} มหาวิทยาลัย
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* University Holdings Interactive Chips */}
+                  {Array.isArray(item.libraries) && item.libraries.length > 0 && (
+                    <div className="bg-slate-900/70 p-2.5 rounded-xl border border-slate-700/80 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-semibold text-amber-300 flex items-center gap-1">
+                          <span>🏛️</span>
+                          <span>สถาบันที่ถือครอง ({item.libraries.length} สถาบัน):</span>
+                        </span>
+                        <span className="text-[10px] text-slate-400">คลิกที่ชื่อเพื่อดู MARC Tag เฉพาะแห่ง</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 max-h-24 overflow-y-auto pr-1">
+                        {item.libraries.map((lib: any, lIdx: number) => (
+                          <button
+                            key={lIdx}
+                            type="button"
+                            onClick={() => {
+                              setSelectedHoldingLib(lib);
+                              setViewingMarcDetail(item);
+                            }}
+                            title={`คลิกเพื่อดูและนำเข้า MARC Tag ของ ${lib.nameTh || ''} (${lib.symbol})`}
+                            className="px-2 py-1 rounded-lg bg-slate-800/90 hover:bg-amber-400 hover:text-slate-950 text-slate-200 text-[11px] font-medium transition cursor-pointer border border-slate-700 flex items-center gap-1 group shadow-sm"
+                          >
+                            <span className="font-mono font-bold text-amber-300 group-hover:text-slate-950">{lib.symbol}</span>
+                            <span className="truncate max-w-[140px]">{lib.nameTh || lib.nameEn}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-end gap-2 pt-1 border-t border-slate-700/50">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedHoldingLib(null);
+                        setViewingMarcDetail(item);
+                      }}
+                      className="px-2.5 py-1.5 bg-slate-700/80 hover:bg-slate-600 text-amber-300 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    >
+                      <BookOpen className="w-3.5 h-3.5" />
+                      <span>ดู MARC Tag</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleImportFromUctal(item)}
+                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>นำเข้าตาราง MARC 21</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Search Input Bar */}
+      <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-slate-200">
+        <form onSubmit={handleSingleSubmit} className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="พิมพ์เลข ISBN (เช่น 9786160401628) หรือ ชื่อหนังสือ (เช่น สุดยอดความคิด 70 ยอดคน, โต๊ะโตะจัง)..."
+              className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition"
+              disabled={isLoading}
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="submit"
+              disabled={isLoading || !searchQuery.trim()}
+              className="px-6 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-sm rounded-xl transition shadow-md flex items-center justify-center gap-2 shrink-0 cursor-pointer"
+            >
+              {isLoading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>กำลังค้นหา...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                  <span>สร้าง MARC21</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleAddEmptyRow}
+              title="เพิ่มแถวเปล่าในตารางเพื่อกรอกข้อมูลด้วยตนเอง"
+              className="px-3.5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition cursor-pointer shrink-0 flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4 text-emerald-600" />
+              <span>เพิ่มแถวเปล่า</span>
+            </button>
+          </div>
+        </form>
+
+        {statusMessage && (
+          <div className="mt-3 flex items-center gap-2 text-xs font-medium text-emerald-700 bg-emerald-50 p-2.5 rounded-lg border border-emerald-200 animate-pulse">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            <span>{statusMessage}</span>
+          </div>
+        )}
+      </div>
+
+      {/* Accession Number Settings Control Bar */}
+      <div className="bg-emerald-50/80 border border-emerald-200 p-3.5 sm:p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-emerald-700 text-white rounded-xl shadow-2xs">
+            <Hash className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="font-bold text-slate-800 text-xs sm:text-sm flex items-center gap-2">
+              <span>ตั้งค่าเลขทะเบียนหนังสือเริ่มต้น (Accession No. Config)</span>
+              <span className="text-[10px] bg-emerald-200 text-emerald-900 font-extrabold px-2 py-0.5 rounded-full">
+                ปรับเปลี่ยนเลขได้
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              กำหนดเลขทะเบียนสำหรับสร้างรายการถัดไป หรือกดปุ่มจัดเรียงเพื่อปรับลำดับเลขทะเบียนทุกแถวในตารางอัตโนมัติ
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5 bg-white border border-emerald-300 rounded-xl px-2.5 py-1.5 shadow-2xs">
+            <span className="text-[11px] font-bold text-emerald-800">เลขเริ่มต้น:</span>
+            <input
+              type="text"
+              value={inputStartAcc}
+              onChange={(e) => setInputStartAcc(e.target.value)}
+              onBlur={() => {
+                const parsed = parseInt(inputStartAcc, 10);
+                if (!isNaN(parsed) && parsed >= 1) {
+                  setStartAccNum(parsed);
+                  localStorage.setItem('iabs_start_acc_num', String(parsed));
+                } else {
+                  setInputStartAcc(String(startAccNum).padStart(10, '0'));
+                }
+              }}
+              placeholder="เช่น 2613"
+              className="w-28 font-mono font-bold text-slate-900 bg-transparent border-0 focus:outline-none focus:ring-0 text-xs text-center"
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              const parsed = parseInt(inputStartAcc, 10);
+              if (!isNaN(parsed) && parsed >= 1) {
+                setStartAccNum(parsed);
+                localStorage.setItem('iabs_start_acc_num', String(parsed));
+                showToast(`🔢 บันทึกตั้งค่าเลขทะเบียนเริ่มต้นเป็น ${String(parsed).padStart(10, '0')} เรียบร้อยแล้ว`);
+              } else {
+                showToast('⚠️ กรุณาระบุเลขทะเบียนเริ่มต้นที่เป็นตัวเลขมากกว่า 0');
+              }
+            }}
+            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1"
+          >
+            <Check className="w-3.5 h-3.5" />
+            <span>ปรับเลขเริ่มต้น</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              const parsed = parseInt(inputStartAcc, 10);
+              const base = !isNaN(parsed) && parsed >= 1 ? parsed : startAccNum;
+              handleAutoRenumber(base);
+            }}
+            disabled={records.length === 0}
+            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5"
+            title="จัดเรียงเลขทะเบียนหนังสือทุกแถวในตารางใหม่ตามลำดับเลขเริ่มต้น"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>เรียงเลขทะเบียนตารางใหม่ ({records.length})</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Action Toolbar */}
+      <div className="bg-slate-50 p-3 sm:p-4 rounded-2xl border border-slate-200 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={toggleSelectAll}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+          >
+            {selectedIds.size === records.length && records.length > 0 ? (
+              <CheckSquare className="w-4 h-4 text-emerald-600" />
+            ) : (
+              <Square className="w-4 h-4 text-slate-400" />
+            )}
+            <span>เลือกทั้งหมด ({records.length})</span>
+          </button>
+
+          {selectedIds.size > 0 && (
+            <span className="text-xs font-bold text-emerald-700 bg-emerald-100/70 px-2.5 py-1 rounded-md">
+              เลือกอยู่ {selectedIds.size} รายการ
+            </span>
+          )}
+
+          {/* Save selected to database button (icon-only) */}
+          <button
+            onClick={handleSaveSelectedToDatabase}
+            disabled={records.length === 0}
+            className="p-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-xl transition shadow-sm cursor-pointer"
+            title={`บันทึกรายการที่เลือก (${selectedIds.size > 0 ? selectedIds.size : records.length}) ลงในฐานข้อมูลห้องสมุด`}
+          >
+            <Save className="w-4 h-4 text-white" />
+          </button>
+
+          {/* Delete selected button (icon-only) */}
+          <button
+            onClick={handleDeleteSelected}
+            disabled={selectedIds.size === 0}
+            className="p-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white rounded-xl transition shadow-sm cursor-pointer"
+            title={`ลบรายการที่เลือก (${selectedIds.size}) ออกจากตาราง`}
+          >
+            <Trash2 className="w-4 h-4 text-white" />
+          </button>
+        </div>
+
+        {/* Copy & Export buttons */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={handleCopySelected}
+            disabled={selectedIds.size === 0}
+            className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+            title="คัดลอกเฉพาะแถวที่เลือกเพื่อนำไปวางใน Excel"
+          >
+            <Copy className="w-3.5 h-3.5" />
+            <span>คัดลอกที่เลือก ({selectedIds.size})</span>
+          </button>
+
+          <button
+            onClick={() => handleCopyAll(false)}
+            disabled={records.length === 0}
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+            title="คัดลอกข้อมูลทุกแถวลงคลิปบอร์ดแบบตาราง Excel"
+          >
+            <Copy className="w-3.5 h-3.5 text-amber-300" />
+            <span>คัดลอกทั้งหมด ({records.length})</span>
+          </button>
+
+          <div className="h-4 w-px bg-slate-300 mx-1 hidden sm:block" />
+
+          <button
+            onClick={handleExportExcel}
+            disabled={records.length === 0}
+            className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+            title="ส่งออกเป็นไฟล์ Microsoft Excel (.xlsx)"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            <span>ดาวน์โหลด Excel</span>
+          </button>
+
+          <button
+            onClick={handleExportCsv}
+            disabled={records.length === 0}
+            className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 disabled:opacity-40 text-slate-700 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+            title="ดาวน์โหลดเป็นไฟล์ CSV (UTF-8)"
+          >
+            <Download className="w-3.5 h-3.5 text-slate-500" />
+            <span>CSV</span>
+          </button>
+
+          <button
+            onClick={() => {
+              if (confirm('คุณแน่ใจหรือไม่ว่าต้องการล้างข้อมูลในตารางทั้งหมด?')) {
+                setRecords([]);
+                setSelectedIds(new Set());
+                showToast('🧹 ล้างตารางเรียบร้อยแล้ว');
+              }
+            }}
+            disabled={records.length === 0}
+            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer disabled:opacity-30"
+            title="ล้างข้อมูลทั้งหมด"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Excel-style Spreadsheet Table Container */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="overflow-x-auto max-h-[620px] relative scrollbar-thin scrollbar-thumb-slate-300">
+          <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
+            {/* Frozen Table Header */}
+            <thead className="sticky top-0 z-20 bg-slate-800 text-white font-semibold select-none shadow-md">
+              <tr className="border-b border-slate-700 divide-x divide-slate-700">
+                <th className="p-3 w-12 text-center bg-slate-900 sticky left-0 z-30">
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.size === records.length && records.length > 0}
+                    onChange={toggleSelectAll}
+                    className="rounded border-slate-600 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  />
+                </th>
+                <th className="p-3 w-28 text-center bg-slate-900 sticky left-12 z-30">
+                  จัดการ
+                </th>
+                {MARC21_COLUMNS.map((col) => (
+                  <th key={col.key} className={`p-3 font-semibold text-slate-200 ${col.width}`}>
+                    <div className="flex flex-col">
+                      <span className="text-[10px] font-mono text-emerald-400 tracking-wider">
+                        {col.tag}
+                      </span>
+                      <span className="truncate" title={col.label}>
+                        {col.label.replace(/\n/g, ' ')}
+                      </span>
+                    </div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+
+            {/* Table Body */}
+            <tbody className="divide-y divide-slate-200 bg-white">
+              {records.length === 0 ? (
+                <tr>
+                  <td colSpan={MARC21_COLUMNS.length + 2} className="p-12 text-center text-slate-400">
+                    <FileSpreadsheet className="w-12 h-12 mx-auto mb-3 opacity-30 text-emerald-600" />
+                    <p className="text-sm font-semibold text-slate-600">ยังไม่มีข้อมูลรายการบรรณานุกรมในตาราง</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      พิมพ์ ISBN หรือชื่อหนังสือในกล่องค้นหาด้านบน หรือกดปุ่ม "รีเซ็ตตัวอย่าง" เพื่อดูตัวอย่างรายการ MARC 21
+                    </p>
+                  </td>
+                </tr>
+              ) : (
+                records.map((r, rowIdx) => {
+                  const isSelected = selectedIds.has(r.id);
+                  return (
+                    <tr 
+                      key={r.id} 
+                      className={`hover:bg-emerald-50/50 transition-colors divide-x divide-slate-100 ${
+                        isSelected ? 'bg-emerald-50/70' : (rowIdx % 2 === 1 ? 'bg-slate-50/40' : 'bg-white')
+                      }`}
+                    >
+                      {/* Checkbox column (sticky left) */}
+                      <td className="p-2.5 text-center bg-inherit sticky left-0 z-10 shadow-[1px_0_0_0_rgba(0,0,0,0.05)]">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectRow(r.id)}
+                          className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                        />
+                      </td>
+
+                      {/* Row Actions column (sticky left-12) */}
+                      <td className="p-2 text-center bg-inherit sticky left-12 z-10 shadow-[2px_0_4px_-1px_rgba(0,0,0,0.06)]">
+                        <div className="flex items-center justify-center gap-1">
+                          <button
+                            onClick={() => setViewingMarcDetail(r)}
+                            title="ดูโครงสร้าง MARC Tag (ตามแบบ UC-TAL ThaiLIS)"
+                            className="p-1 text-amber-700 hover:text-amber-900 hover:bg-amber-100 rounded transition cursor-pointer"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleCopyRow(r)}
+                            title="คัดลอกแถวนี้ (พร้อมวางใน Excel)"
+                            className="p-1 text-emerald-700 hover:text-emerald-900 hover:bg-emerald-100 rounded transition cursor-pointer"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setEditingRecord(r)}
+                            title="แก้ไขข้อมูลแถวนี้"
+                            className="p-1 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded transition cursor-pointer"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleSyncToLibrary(r)}
+                            title="บันทึกเข้าสู่ฐานข้อมูลห้องสมุด"
+                            className="p-1 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-100 rounded transition cursor-pointer"
+                          >
+                            <Save className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteRow(r.id)}
+                            title="ลบแถวนี้"
+                            className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-100 rounded transition cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+
+                      {/* 29 Columns */}
+                      <td className="p-2.5 text-slate-600 font-mono">{r.date}</td>
+                      <td className="p-2.5 text-slate-400">{r.col1}</td>
+                      <td className="p-2.5">
+                        {(() => {
+                          const numVal = parseInt(r.accession_no, 10);
+                          const clean = !isNaN(numVal) ? String(numVal) : (r.accession_no?.trim() || '');
+                          const isDup = (duplicateAccMap[clean] || 0) > 1;
+                          return (
+                            <div className="flex items-center gap-1.5 font-mono">
+                              <span className={`font-bold px-1.5 py-0.5 rounded text-xs ${
+                                isDup 
+                                  ? 'text-rose-700 bg-rose-100 border border-rose-300' 
+                                  : 'text-slate-900 bg-slate-100'
+                              }`}>
+                                {r.accession_no}
+                              </span>
+                              {isDup && (
+                                <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-1 rounded" title="เลขทะเบียนนี้ซ้ำกับรายการอื่นในตาราง">
+                                  ซ้ำ!
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="p-2.5 font-mono text-indigo-700 font-semibold">{r.isbn}</td>
+                      <td className="p-2.5 font-medium text-slate-800">{r.author_personal}</td>
+                      <td className="p-2.5 text-slate-600">{r.author_corporate}</td>
+                      <td className="p-2.5 font-semibold text-slate-900 max-w-xs truncate" title={r.title_245a}>
+                        {r.title_245a}
+                      </td>
+                      <td className="p-2.5 text-slate-600 max-w-xs truncate" title={r.title_245b}>
+                        {r.title_245b}
+                      </td>
+                      <td className="p-2.5 text-slate-600">{formatAuthorList245c(r.responsibility_245c, r.author_personal)}</td>
+                      <td className="p-2.5 font-bold font-mono text-emerald-700 bg-emerald-50/50 text-center">
+                        {r.ddc_082a}
+                      </td>
+                      <td className="p-2.5 font-mono text-center">
+                        <div className="inline-flex items-center justify-center gap-1 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200/80 font-bold text-emerald-800 shadow-2xs">
+                          <span>{r.cutter_082b}</span>
+                          {r.cutter_082b && r.cutter_082b !== '-' && (
+                            <button
+                              onClick={() => copyToClipboard(r.cutter_082b, 'เลขคัตเตอร์ (082 $b)')}
+                              title="คัดลอกเลขคัตเตอร์ (082 $b)"
+                              className="p-1 text-emerald-600 hover:text-emerald-950 hover:bg-emerald-200 rounded transition cursor-pointer"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-2.5 text-slate-600">{r.pub_place}</td>
+                      <td className="p-2.5 font-medium text-slate-800">{r.publisher}</td>
+                      <td className="p-2.5 font-mono text-slate-700 text-center">{r.pub_year}</td>
+                      <td className="p-2.5 text-slate-600 text-center">{r.pages_300a}</td>
+                      <td className="p-2.5 text-slate-500 text-center">{r.illustration_300b}</td>
+                      <td className="p-1.5 min-w-[190px]">
+                        {(() => {
+                          const thisRow650s = Array.isArray(r.marc_tags) 
+                            ? r.marc_tags
+                                .filter((t: any) => t.tagID === '650' || t.tag === '650')
+                                .map((t: any) => parseMarcSubfield(t.data || '', 'a') || t.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim())
+                                .filter((s): s is string => Boolean(s && s !== '-'))
+                            : [];
+
+                          const options = Array.from(new Set([
+                            ...thisRow650s,
+                            r.subject_650a,
+                            r.subject_650_2
+                          ].filter((s): s is string => Boolean(s && s !== '-'))));
+
+                          if (options.length === 0) {
+                            options.push(r.subject_650a || 'ทั่วไป');
+                          }
+
+                          if (options.length > 1) {
+                            return (
+                              <div className="relative">
+                                <select
+                                  value={r.subject_650a || options[0]}
+                                  onChange={(e) => handleSubjectChange(r.id, e.target.value)}
+                                  title={`เลือกหัวเรื่องจาก MARC Tag 650 ของเล่มนี้ (${options.length} หัวเรื่อง)`}
+                                  className="w-full bg-emerald-50/70 hover:bg-white focus:bg-white border border-emerald-300 hover:border-emerald-500 focus:border-emerald-500 rounded-lg px-2 py-1.5 text-xs text-emerald-900 font-medium cursor-pointer transition focus:outline-none focus:ring-1 focus:ring-emerald-500 truncate shadow-sm"
+                                >
+                                  {options.map((s, sIdx) => (
+                                    <option key={`marc650_${r.id}_${sIdx}`} value={s}>
+                                      🏷️ {s}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="px-2 py-1 text-xs text-slate-800 font-medium truncate" title={options[0]}>
+                              {options[0]}
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="p-2.5 text-center font-mono">{r.copies}</td>
+                      <td className="p-2.5 text-slate-600 max-w-md truncate" title={r.summary_520}>
+                        {r.summary_520}
+                      </td>
+                      <td className="p-2.5 text-slate-600">{r.edition_250}</td>
+                      <td className="p-2.5 text-slate-700 font-mono">{r.price_541}</td>
+                      <td className="p-2.5 text-slate-600">{r.series_490}</td>
+                      <td className="p-1.5 min-w-[180px]">
+                        {(() => {
+                          const optionsSet = new Set<string>();
+
+                          // 1. Collect from Tag 700 in r.marc_tags
+                          if (Array.isArray(r.marc_tags)) {
+                            r.marc_tags.forEach((t: any) => {
+                              if (t.tagID === '700' || t.tag === '700') {
+                                const a = parseMarcSubfield(t.data || '', 'a') || t.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
+                                if (a) {
+                                  optionsSet.add(formatAddedEntry700(a));
+                                }
+                              }
+                            });
+                          }
+
+                          // 2. From r.added_entry_700
+                          if (r.added_entry_700 && r.added_entry_700 !== '-') {
+                            optionsSet.add(formatAddedEntry700(r.added_entry_700));
+                          }
+
+                          // 3. Extract translator from raw responsibility text if present
+                          if (r.responsibility_245c && (r.responsibility_245c.includes('แปล') || r.responsibility_245c.includes('ผู้แปล'))) {
+                            const match = r.responsibility_245c.match(/([^\/;,]+?)\s*(?:แปล|ผู้แปล)/i);
+                            if (match && match[1]) {
+                              optionsSet.add(formatAddedEntry700(match[1].trim()));
+                            }
+                          }
+
+                          const options = Array.from(optionsSet).filter(Boolean);
+                          const currentVal = formatAddedEntry700(r.added_entry_700);
+
+                          return (
+                            <div className="relative">
+                              <select
+                                value={currentVal}
+                                onChange={(e) => handleAddedEntry700Change(r.id, e.target.value)}
+                                title="เลือกผู้แปล/ผู้แต่งร่วม (Tag 700)"
+                                className="w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 hover:border-indigo-400 focus:border-indigo-500 rounded-lg px-2 py-1 text-xs text-slate-800 font-medium cursor-pointer transition focus:outline-none focus:ring-1 focus:ring-indigo-500 truncate shadow-sm"
+                              >
+                                <option value="-">- (ไม่มีผู้แปล/ผู้แต่งร่วม)</option>
+                                {options.map((opt, oIdx) => (
+                                  <option key={`700_${r.id}_${oIdx}`} value={opt}>
+                                    👥 {opt}
+                                  </option>
+                                ))}
+                                {!options.includes(currentVal) && currentVal !== '-' && (
+                                  <option value={currentVal}>👥 {currentVal}</option>
+                                )}
+                              </select>
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="p-2.5 text-slate-600">{r.acquisition_source}</td>
+                      <td className="p-2.5 text-slate-400">{r.col2}</td>
+                      <td className="p-2.5 text-slate-600">{r.source_type}</td>
+                      <td className="p-1.5 min-w-[150px]">
+                        <select
+                          value={r.storage_location || 'สำหรับเด็ก'}
+                          onChange={(e) => handleStorageLocationChange(r.id, e.target.value)}
+                          title="เลือกสถานที่จัดเก็บ"
+                          className="w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 hover:border-emerald-400 focus:border-emerald-500 rounded-lg px-2 py-1 text-xs text-slate-800 font-medium cursor-pointer transition focus:outline-none focus:ring-1 focus:ring-emerald-500 truncate shadow-sm"
+                        >
+                          {!allAvailableStorageLocations.includes(r.storage_location) && r.storage_location && (
+                            <option value={r.storage_location}>{r.storage_location}</option>
+                          )}
+                          {allAvailableStorageLocations.map(loc => (
+                            <option key={loc} value={loc}>{loc}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="p-2.5">
+                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                          r.status === 'สูญหาย' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'
+                        }`}>
+                          {r.status}
+                        </span>
+                      </td>
+                      <td className="p-2.5 text-slate-400">{r.col3}</td>
+
+                      {/* Extended MARC21 Columns (All remaining tags after EXTRA2) */}
+                      <td className="p-2.5 font-mono text-slate-700 text-xs">{r.leader_000 || '-'}</td>
+                      <td className="p-2.5 font-mono text-indigo-700 font-semibold">{r.control_001 || '-'}</td>
+                      <td className="p-2.5 font-mono text-slate-600 text-center">{r.control_003 || '-'}</td>
+                      <td className="p-2.5 font-mono text-slate-600 text-xs">{r.trans_005 || '-'}</td>
+                      <td className="p-2.5 font-mono text-slate-700 text-xs max-w-xs truncate" title={r.fixed_008}>{r.fixed_008 || '-'}</td>
+                      <td className="p-2.5 font-mono text-slate-700">{r.issn_022 || '-'}</td>
+                      <td className="p-2.5 font-mono text-slate-600 text-center">{r.cat_source_040 || '-'}</td>
+                      <td className="p-2.5 font-mono text-slate-600 text-center">{r.language_041 || '-'}</td>
+                      <td className="p-2.5 text-slate-600 text-center">{r.dimensions_300c || '-'}</td>
+                      <td className="p-2.5 text-slate-600 max-w-xs truncate" title={r.note_general_500}>{r.note_general_500 || '-'}</td>
+                      <td className="p-2.5 text-slate-600 max-w-xs truncate" title={r.note_bib_504}>{r.note_bib_504 || '-'}</td>
+                      <td className="p-2.5 text-slate-600 max-w-xs truncate" title={r.note_contents_505}>{r.note_contents_505 || '-'}</td>
+                      <td className="p-2.5 text-slate-700">{r.subject_person_600 || '-'}</td>
+                      <td className="p-2.5 text-slate-700">{r.subject_corp_610 || '-'}</td>
+                      <td className="p-2.5 text-slate-700">{r.subject_uniform_630 || '-'}</td>
+                      <td className="p-2.5 text-slate-700">{r.subject_geo_651 || '-'}</td>
+                      <td className="p-2.5 text-slate-700">{r.subject_650_2 || '-'}</td>
+                      <td className="p-2.5 text-slate-700">{r.added_corp_710 || '-'}</td>
+                      <td className="p-2.5 text-slate-600 max-w-xs truncate" title={r.added_title_740}>{r.added_title_740 || '-'}</td>
+                      <td className="p-2.5 text-slate-600">{r.series_uniform_830 || '-'}</td>
+                      <td className="p-2.5 font-mono text-xs text-blue-600 max-w-xs truncate" title={r.electronic_856}>{r.electronic_856 || '-'}</td>
+                      <td className="p-2.5 font-mono text-slate-700">{r.local_907 || '-'}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Table Footer info */}
+        <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between text-xs text-slate-500 gap-2">
+          <div className="flex items-center gap-2">
+            <span>แสดงทั้งหมด <strong>{records.length}</strong> แถว (<strong>{MARC21_COLUMNS.length}</strong> คอลัมน์ พร้อมข้อมูล MARC 21 Tags ทั้งหมดสมบูรณ์แบบ)</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-slate-400">
+              💡 คลิกไอคอน <Copy className="w-3 h-3 inline text-emerald-700" /> เพื่อคัดลอกแถวไปวางใน Excel ได้ทันที
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Batch Input Modal */}
+      {isBatchOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-scaleIn">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-emerald-100 text-emerald-800">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">สร้างรายการบรรณานุกรมเป็นชุด (Batch)</h3>
+                  <p className="text-xs text-slate-500">วางรหัส ISBN หรือชื่อเรื่อง ทีละบรรทัด (รองรับสูงสุด 25 เล่มต่อครั้ง)</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setIsBatchOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleBatchSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                  รายการ ISBN หรือชื่อหนังสือ (หนึ่งเล่มต่อหนึ่งบรรทัด):
+                </label>
+                <textarea
+                  value={batchQueries}
+                  onChange={(e) => setBatchQueries(e.target.value)}
+                  rows={6}
+                  placeholder="ตัวอย่าง:&#10;9786160401628&#10;9786160403264&#10;โต๊ะโตะจัง เด็กหญิงข้างหน้าต่าง&#10;46 วิธี ฝึกวันละนิด ฉลาดคิด ฉลาดพูด"
+                  className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs sm:text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition"
+                  disabled={isLoading}
+                />
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  type="button"
+                  onClick={() => setBatchQueries(`9786163930446\n9786160401628\n9786160403264\n9786160405886\n9786160401604`)}
+                  className="text-xs text-emerald-700 hover:underline cursor-pointer"
+                >
+                  ใส่ตัวอย่าง 5 เล่ม
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsBatchOpen(false)}
+                    className="px-4 py-2 border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-100 transition cursor-pointer"
+                  >
+                    ยกเลิก
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isLoading || !batchQueries.trim()}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center gap-2 cursor-pointer"
+                  >
+                    {isLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 text-amber-300" />}
+                    <span>ประมวลผลสร้าง MARC21</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Record Modal */}
+      {editingRecord && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto space-y-4 animate-scaleIn">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-indigo-100 text-indigo-700">
+                  <Edit3 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">แก้ไขข้อมูลบรรณานุกรม MARC 21</h3>
+                  <p className="text-xs text-slate-500">เลขทะเบียน: {editingRecord.accession_no} | ISBN: {editingRecord.isbn || '-'}</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setEditingRecord(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+              <div className="sm:col-span-2 md:col-span-3">
+                <label className="block font-semibold text-slate-700 mb-1">245 $a : $b = 246 $a (ชื่อเรื่องเต็ม / ชื่อเรื่องคู่ขนาน)</label>
+                <input
+                  type="text"
+                  value={editingRecord.title_245a}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, title_245a: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">246 (Ind1=3, Ind2=1) $a :$b (ชื่อเรื่องคู่ขนาน/ภาษาอังกฤษ)</label>
+                <input
+                  type="text"
+                  value={editingRecord.title_245b || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, title_245b: e.target.value })}
+                  placeholder="$aTitle :$bSubtitle."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-emerald-800"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">541 ราคา (บาท)</label>
+                <input
+                  type="text"
+                  value={editingRecord.price_541 || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, price_541: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-emerald-700"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block font-semibold text-slate-700 mb-1">245 $c ส่วนแจ้งความรับผิดชอบ (ชื่อผู้แต่งอย่างเดียว ไม่ใส่ผู้แปล)</label>
+                <input
+                  type="text"
+                  value={editingRecord.responsibility_245c || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, responsibility_245c: e.target.value })}
+                  placeholder="เช่น Robert T. Kiyosaki."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">700 ผู้แปล / ผู้แต่งร่วม (เช่น จักรพงษ์ เมษพันธุ์, ผู้แปล)</label>
+                <input
+                  type="text"
+                  value={editingRecord.added_entry_700 || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, added_entry_700: formatAddedEntry700(e.target.value) })}
+                  placeholder="จักรพงษ์ เมษพันธุ์, ผู้แปล"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium text-indigo-900"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">490 ชุด / ซีรีส์</label>
+                <input
+                  type="text"
+                  value={editingRecord.series_490 || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, series_490: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">เลขทะเบียน</label>
+                <input
+                  type="text"
+                  value={editingRecord.accession_no}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, accession_no: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">020 ISBN</label>
+                <input
+                  type="text"
+                  value={editingRecord.isbn}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, isbn: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-indigo-700"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">100 ผู้แต่ง (ชื่อบุคคล)</label>
+                <AuthorInputWithSuggestions
+                  value={editingRecord.author_personal || ''}
+                  onChange={(val) => {
+                    const existingCutters = new Set(
+                      records
+                        .filter(r => r.id !== editingRecord.id && r.cutter_082b)
+                        .map(r => r.cutter_082b)
+                    );
+                    const newCutter = calculateThaiCutter(val, editingRecord.title_245a, existingCutters);
+                    setEditingRecord({
+                      ...editingRecord,
+                      author_personal: val,
+                      cutter_082b: newCutter
+                    });
+                  }}
+                  onSelectAuthor={(selectedAuthor) => {
+                    const existingCutters = new Set(
+                      records
+                        .filter(r => r.id !== editingRecord.id && r.cutter_082b)
+                        .map(r => r.cutter_082b)
+                    );
+                    const newCutter = calculateThaiCutter(selectedAuthor, editingRecord.title_245a, existingCutters);
+                    setEditingRecord({
+                      ...editingRecord,
+                      author_personal: selectedAuthor,
+                      cutter_082b: newCutter
+                    });
+                    showToast(`👤 เลือกผู้แต่ง "${selectedAuthor}" และคำนวณคัตเตอร์ "${newCutter}" เรียบร้อย`);
+                  }}
+                  records={records}
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">082 $a เลขหมู่หนังสือ (DDC)</label>
+                <input
+                  type="text"
+                  value={editingRecord.ddc_082a}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, ddc_082a: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-emerald-700"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-semibold text-slate-700">082 $b เลขประจำหนังสือ (Cutter)</label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const existingCutters = new Set(
+                        records
+                          .filter(r => r.id !== editingRecord.id && r.cutter_082b)
+                          .map(r => r.cutter_082b)
+                      );
+                      const recut = calculateThaiCutter(editingRecord.author_personal, editingRecord.title_245a, existingCutters);
+                      setEditingRecord({ ...editingRecord, cutter_082b: recut });
+                      showToast(`🔄 คำนวณเลขคัตเตอร์ใหม่: ${recut}`);
+                    }}
+                    className="text-[11px] text-indigo-600 hover:text-indigo-800 font-medium hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>คำนวณใหม่</span>
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={editingRecord.cutter_082b}
+                    onChange={(e) => setEditingRecord({ ...editingRecord, cutter_082b: e.target.value })}
+                    className="w-full p-2.5 bg-emerald-50/60 border border-emerald-200 rounded-xl font-mono font-bold text-emerald-800 pr-10"
+                  />
+                  {editingRecord.cutter_082b && editingRecord.cutter_082b !== '-' && (
+                    <button
+                      type="button"
+                      onClick={() => copyToClipboard(editingRecord.cutter_082b || '', 'เลขคัตเตอร์ (082 $b)')}
+                      title="คัดลอกเลขคัตเตอร์ (082 $b)"
+                      className="absolute right-2 top-2 p-1.5 text-emerald-600 hover:text-emerald-900 hover:bg-emerald-100 rounded-lg transition cursor-pointer"
+                    >
+                      <Copy className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">$b สำนักพิมพ์</label>
+                <input
+                  type="text"
+                  value={editingRecord.publisher}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, publisher: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">$a สถานที่พิมพ์</label>
+                <input
+                  type="text"
+                  value={editingRecord.pub_place}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, pub_place: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">260 $c ปีที่พิมพ์</label>
+                <input
+                  type="text"
+                  value={editingRecord.pub_year}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, pub_year: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">300 $a จำนวนหน้า</label>
+                <input
+                  type="text"
+                  value={editingRecord.pages_300a}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, pages_300a: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                />
+              </div>
+
+              <div className="sm:col-span-2">
+                <label className="block font-semibold text-slate-700 mb-1">650 $a หัวเรื่อง 1 (จาก MARC Tag 650 ของเล่มนี้)</label>
+                {(() => {
+                  const recordMarc650s = Array.isArray(editingRecord.marc_tags)
+                    ? editingRecord.marc_tags
+                        .filter((t: any) => t.tagID === '650' || t.tag === '650')
+                        .map((t: any) => parseMarcSubfield(t.data || '', 'a') || t.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim())
+                        .filter((s): s is string => Boolean(s && s !== '-'))
+                    : [];
+                  const uniqueMarc650s: string[] = Array.from(new Set([...recordMarc650s, editingRecord.subject_650_2].filter((s): s is string => Boolean(s && s !== '-'))));
+
+                  return (
+                    <div className="space-y-2">
+                      {uniqueMarc650s.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          <span className="text-[11px] text-slate-500 font-medium">หัวเรื่องใน MARC:</span>
+                          {uniqueMarc650s.map((subj, idx) => (
+                            <button
+                              key={`emarc_${idx}`}
+                              type="button"
+                              onClick={() => setEditingRecord({ ...editingRecord, subject_650a: subj })}
+                              className={`px-2 py-0.5 rounded-lg text-xs font-medium border transition ${
+                                editingRecord.subject_650a === subj
+                                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                                  : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                              }`}
+                            >
+                              🏷️ {subj}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <input
+                        type="text"
+                        list="subject-headings-list"
+                        value={editingRecord.subject_650a}
+                        onChange={(e) => setEditingRecord({ ...editingRecord, subject_650a: e.target.value })}
+                        placeholder="ระบุหรือแก้ไขหัวเรื่อง..."
+                        className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                      />
+                    </div>
+                  );
+                })()}
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">สถานที่จัดเก็บ</label>
+                <div className="space-y-1.5">
+                  <select
+                    value={allAvailableStorageLocations.includes(editingRecord.storage_location) ? editingRecord.storage_location : ''}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        setEditingRecord({ ...editingRecord, storage_location: e.target.value });
+                      }
+                    }}
+                    className="w-full p-2 bg-slate-100 border border-slate-200 rounded-xl text-xs text-slate-700 font-medium"
+                  >
+                    <option value="">-- เลือกจากสถานที่จัดเก็บในระบบ --</option>
+                    {allAvailableStorageLocations.map(loc => (
+                      <option key={loc} value={loc}>{loc}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="text"
+                    value={editingRecord.storage_location}
+                    onChange={(e) => setEditingRecord({ ...editingRecord, storage_location: e.target.value })}
+                    placeholder="พิมพ์หรือเลือกสถานที่จัดเก็บ..."
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"
+                  />
+                </div>
+              </div>
+
+              <div className="sm:col-span-2 md:col-span-3">
+                <label className="block font-semibold text-slate-700 mb-1">520 เรื่องย่อ</label>
+                <textarea
+                  value={editingRecord.summary_520}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, summary_520: e.target.value })}
+                  rows={2}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                />
+              </div>
+
+              {/* Extended MARC21 Tags Section */}
+              <div className="sm:col-span-2 md:col-span-3 pt-3 border-t border-slate-200">
+                <h4 className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                  <span>ข้อมูล MARC 21 Tags เพิ่มเติม (Extended MARC 21 Fields)</span>
+                </h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 bg-slate-50 p-3 rounded-2xl border border-slate-200">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Leader (000 LDR)</label>
+                    <input
+                      type="text"
+                      value={editingRecord.leader_000 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, leader_000: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">001 Bib ID</label>
+                    <input
+                      type="text"
+                      value={editingRecord.control_001 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, control_001: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">008 Fixed Length</label>
+                    <input
+                      type="text"
+                      value={editingRecord.fixed_008 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, fixed_008: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">022 ISSN</label>
+                    <input
+                      type="text"
+                      value={editingRecord.issn_022 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, issn_022: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">246 ชื่อเรื่องคู่ขนาน/ที่แตกต่าง</label>
+                    <input
+                      type="text"
+                      value={editingRecord.title_varying_246 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, title_varying_246: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">300 $c ขนาดเล่ม</label>
+                    <input
+                      type="text"
+                      value={editingRecord.dimensions_300c || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, dimensions_300c: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">500 หมายเหตุทั่วไป</label>
+                    <input
+                      type="text"
+                      value={editingRecord.note_general_500 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, note_general_500: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">505 สารบัญเนื้อหา</label>
+                    <input
+                      type="text"
+                      value={editingRecord.note_contents_505 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, note_contents_505: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">650 หัวเรื่อง 2</label>
+                    <input
+                      type="text"
+                      value={editingRecord.subject_650_2 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, subject_650_2: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">830 ชื่อชุดแบบฉบับ</label>
+                    <input
+                      type="text"
+                      value={editingRecord.series_uniform_830 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, series_uniform_830: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">856 $u ลิงก์รูปภาพ/เอกสาร</label>
+                    <input
+                      type="text"
+                      value={editingRecord.electronic_856 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, electronic_856: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">907 เลขระเบียนท้องถิ่น</label>
+                    <input
+                      type="text"
+                      value={editingRecord.local_907 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, local_907: e.target.value })}
+                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditingRecord(null)}
+                className="px-4 py-2 border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-100 transition cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setRecords(prev => prev.map(item => item.id === editingRecord.id ? editingRecord : item));
+                  await handleSyncToLibrary(editingRecord);
+                  setEditingRecord(null);
+                }}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer flex items-center gap-1.5"
+              >
+                <Check className="w-4 h-4" />
+                <span>บันทึกการแก้ไข & ลงฐานข้อมูล</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Thai Cutter Reference Table Modal (TK Park, Chula, PSU Standard) */}
+      {isCutterTableOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto space-y-5 animate-scaleIn">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-2xl bg-rose-600 text-white shadow-md">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base sm:text-lg font-extrabold text-slate-900">
+                      การให้เลขคัตเตอร์ผู้แต่ง (ภาษาไทย)
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 text-[11px] font-bold text-slate-600">
+                      TK, จุฬาฯ, มอ.
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    มาตรฐานการกำหนดเลขประจำหนังสือ (Author Cutter Number) สำหรับระบบบรรณานุกรมห้องสมุด
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsCutterTableOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Interactive Live Cutter Tester */}
+            <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 p-4 rounded-2xl border border-emerald-200/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-emerald-600" />
+                  <span>ทดลองคำนวณเลขคัตเตอร์อัตโนมัติ (Live Tester)</span>
+                </span>
+                <span className="text-[11px] text-emerald-700 font-medium">ผลลัพธ์คำนวณตามสูตรทันที</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 items-end">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">ชื่อผู้แต่ง (Author):</label>
+                  <AuthorInputWithSuggestions
+                    value={testAuthor}
+                    onChange={(val) => setTestAuthor(val)}
+                    onSelectAuthor={(selectedAuthor, cutter) => {
+                      setTestAuthor(selectedAuthor);
+                      showToast(`👤 เลือกผู้แต่ง "${selectedAuthor}" (คัตเตอร์: ${cutter}) เรียบร้อย`);
+                    }}
+                    records={records}
+                    currentTitle={testTitle}
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">ชื่อหนังสือ (Title):</label>
+                  <input
+                    type="text"
+                    value={testTitle}
+                    onChange={(e) => setTestTitle(e.target.value)}
+                    placeholder="เช่น การทดลอง, ทุกมื้ออร่อยจัง..."
+                    className="w-full p-2.5 bg-white border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500 font-medium"
+                  />
+                </div>
+                <div className="sm:col-span-2 md:col-span-1 flex flex-col justify-end">
+                  {(() => {
+                    const existingCutters = new Set(records.map(r => r.cutter_082b).filter(Boolean));
+                    const calculatedCutter = (testAuthor || testTitle) ? calculateThaiCutter(testAuthor, testTitle, existingCutters) : '-';
+                    return (
+                      <div className="p-2.5 bg-emerald-600 text-white rounded-xl shadow-md flex items-center justify-between px-3.5 border border-emerald-500">
+                        <div>
+                          <span className="text-[10px] uppercase font-bold text-emerald-200 block">เลขคัตเตอร์ที่ได้ (082 $B):</span>
+                          <span className="text-lg font-black font-mono tracking-wider text-white">
+                            {calculatedCutter}
+                          </span>
+                        </div>
+                        {calculatedCutter !== '-' && (
+                          <button
+                            type="button"
+                            onClick={() => copyToClipboard(calculatedCutter, 'เลขคัตเตอร์ (082 $b)')}
+                            title="คัดลอกเลขคัตเตอร์ (082 $b)"
+                            className="px-2.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 active:scale-95 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer border border-emerald-400/60 hover:scale-105"
+                          >
+                            <Copy className="w-3.5 h-3.5 text-amber-300" />
+                            <span>คัดลอก</span>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            {/* Consonants & Vowels Reference Tables */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Consonants Table */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2.5">
+                <h4 className="text-xs font-bold text-slate-900 flex items-center justify-between">
+                  <span>1. ตารางพยัญชนะ</span>
+                  <span className="text-[10px] text-slate-500 font-normal">ตัวเลขแทนกลุ่มพยัญชนะ</span>
+                </h4>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1.5">
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ก ข ค ฆ</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">1</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ง จ ฉ ช ซ ฌ</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">2</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ญ ฎ ฏ ฐ ฑ ฒ</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">3</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ณ ด ต ถ ท ธ</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">4</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">น บ ป ผ ฝ</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">5</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">พ ฟ ภ ม ย</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">6</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ร ล ว</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">7</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ศ ษ ส</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">8</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ห ฬ อ ฮ</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">9</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ฤ ฦ</span>
+                      <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">10</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Vowels Table */}
+              <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-2.5">
+                <h4 className="text-xs font-bold text-slate-900 flex items-center justify-between">
+                  <span>2. ตารางสระ</span>
+                  <span className="text-[10px] text-slate-500 font-normal">ตัวเลขแทนกลุ่มสระ</span>
+                </h4>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="space-y-1.5">
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">- ะ  ั  - ั ะ</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">1</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">า  ำ</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">2</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ิ  ี  ึ  ื</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">3</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ุ  ู</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">4</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">เ-  เ-ะ</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">5</span>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">เ-า  เ-าะ</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">6</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">เ ีย  เ ียะ  เ ือ</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">7</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">แ-  แ-ะ  โ-  โ-ะ</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">8</span>
+                    </div>
+                    <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
+                      <span className="font-sans font-bold text-slate-800">ใ-  ไ-</span>
+                      <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">9</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Example Box */}
+            <div className="bg-slate-100/70 p-4 rounded-2xl border border-slate-200 space-y-2">
+              <h4 className="text-xs font-bold text-slate-900">3. ตัวอย่างการเทียบเลขคัตเตอร์ตามมาตรฐาน</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 text-xs">
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">โสรยา</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.ส87</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">แพรวา (ควบกล้ำ)</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.พ78</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">เปรมเกียรติ</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.ป75</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">กฤษณา (ฤ=10)</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.ก108</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">ฉัตราภรณ์</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.ฉ14</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">ธีรดา</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.ธ37</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">วรธิดา</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.ว74</span>
+                </div>
+                <div className="bg-white p-2 rounded-xl border border-slate-200 flex justify-between items-center">
+                  <span className="font-medium text-slate-700">คอมพิวเตอร์ฯ (ไร้ผู้แต่ง)</span>
+                  <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">.ค96</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setIsCutterTableOpen(false)}
+                className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer"
+              >
+                ปิดหน้าต่างตารางคัตเตอร์
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* UC-TAL Bibliographic & Full MARC 21 Tag Breakdown Modal (Matching exact UC-TAL Standard) */}
+      {viewingMarcDetail && (() => {
+        let baseTagsList: MarcTagItem[] = [];
+        if (Array.isArray(viewingMarcDetail.marcRaw) && viewingMarcDetail.marcRaw.length > 0) {
+          baseTagsList = JSON.parse(JSON.stringify(viewingMarcDetail.marcRaw));
+        } else if (Array.isArray(viewingMarcDetail.marc_tags) && viewingMarcDetail.marc_tags.length > 0) {
+          baseTagsList = JSON.parse(JSON.stringify(viewingMarcDetail.marc_tags));
+        } else {
+          baseTagsList = generateMarcTagsFromRecord(viewingMarcDetail as Marc21Record);
+        }
+
+        // Ensure Tag 520 (เรื่องย่อ) is included if present in object but not in tags
+        const has520Tag = baseTagsList.some(t => t.tagID === '520');
+        if (!has520Tag && (viewingMarcDetail.summary || viewingMarcDetail.summary_520)) {
+          const summaryText = viewingMarcDetail.summary || viewingMarcDetail.summary_520;
+          const insertIdx = baseTagsList.findIndex(t => parseInt(t.tagID, 10) >= 600);
+          const tag520: MarcTagItem = {
+            tagID: '520',
+            indc1: '',
+            indc2: '',
+            data: `$a${summaryText}`,
+            fromInternet: viewingMarcDetail.isSynopsisFromInternet || true
+          };
+          if (insertIdx !== -1) {
+            baseTagsList.splice(insertIdx, 0, tag520);
+          } else {
+            baseTagsList.push(tag520);
+          }
+        }
+
+        // Customize MARC tags based on selected holding institution
+        let marcTagsList = [...baseTagsList];
+        const instSymbol = selectedHoldingLib?.symbol || selectedHoldingLib?.locationSymbol;
+        const instName = selectedHoldingLib?.nameTh || selectedHoldingLib?.locationNameTh;
+
+        if (instSymbol) {
+          // Tag 040 Cataloging Source
+          const idx040 = marcTagsList.findIndex(t => t.tagID === '040');
+          const tag040Obj: MarcTagItem = { tagID: '040', indc1: '', indc2: '', data: `$a${instSymbol}$c${instSymbol}` };
+          if (idx040 >= 0) marcTagsList[idx040] = tag040Obj;
+          else {
+            const ins040 = marcTagsList.findIndex(t => parseInt(t.tagID, 10) >= 41 || parseInt(t.tagID, 10) >= 100);
+            if (ins040 >= 0) marcTagsList.splice(ins040, 0, tag040Obj);
+            else marcTagsList.push(tag040Obj);
+          }
+
+          // Tag 003 Agency
+          const idx003 = marcTagsList.findIndex(t => t.tagID === '003');
+          const tag003Obj: MarcTagItem = { tagID: '003', indc1: '', indc2: '', data: `UCTAL-${instSymbol}` };
+          if (idx003 >= 0) marcTagsList[idx003] = tag003Obj;
+          else {
+            const ins003 = marcTagsList.findIndex(t => parseInt(t.tagID, 10) >= 5);
+            if (ins003 >= 0) marcTagsList.splice(ins003, 0, tag003Obj);
+            else marcTagsList.push(tag003Obj);
+          }
+
+          // Tag 907 Local Bib
+          const idx907 = marcTagsList.findIndex(t => t.tagID === '907');
+          const localBibVal = viewingMarcDetail.bibId || (viewingMarcDetail.accession_no ? `b${viewingMarcDetail.accession_no}` : 'b0000000');
+          const tag907Obj: MarcTagItem = { tagID: '907', indc1: '', indc2: '', data: `$a${localBibVal}-$b${instSymbol}` };
+          if (idx907 >= 0) marcTagsList[idx907] = tag003Obj;
+          else marcTagsList.push(tag907Obj);
+        }
+
+        const handleCopyMarcContent = () => {
+          const lines = marcTagsList.map(t => `${t.tagID}\t${t.indc1 || ' '}\t${t.indc2 || ' '}\t${t.data}`);
+          navigator.clipboard.writeText(lines.join('\n')).then(() => {
+            showToast('📋 คัดลอกข้อมูล MARC 21 ทั้งหมดลงคลิปบอร์ดแล้ว');
+          });
+        };
+
+        const isAlreadyInTable = records.some(r => r.id === viewingMarcDetail.id || (r.isbn && r.isbn === viewingMarcDetail.isbn));
+
+        const holdingLibs = Array.isArray(viewingMarcDetail.libraries) ? viewingMarcDetail.libraries : [];
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6">
+            <div className="bg-white rounded-2xl sm:rounded-3xl max-w-4xl w-full p-5 sm:p-6 shadow-2xl border border-slate-200 max-h-[94vh] flex flex-col justify-between space-y-3.5 animate-scaleIn">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+                <div className="flex items-center gap-2.5">
+                  <h3 className="text-xl font-bold text-slate-900 tracking-tight">
+                    MARC
+                  </h3>
+                  {selectedHoldingLib ? (
+                    <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 font-bold text-xs border border-amber-300 flex items-center gap-1">
+                      <span>🏛️</span>
+                      <span>สถาบัน: {selectedHoldingLib.nameTh || selectedHoldingLib.symbol} ({selectedHoldingLib.symbol})</span>
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold text-xs border border-slate-200">
+                      🌐 ข้อมูลกลาง UC-TAL (All Libraries)
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setViewingMarcDetail(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Holding Institutions Switcher Bar */}
+              {holdingLibs.length > 0 && (
+                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                      <span>🏛️</span>
+                      <span>เลือกดูระเบียน MARC ตามสถาบันที่ถือครอง ({holdingLibs.length} สถาบัน):</span>
+                    </span>
+                    <span className="text-[11px] text-slate-500">คลิกเพื่อสลับและดูข้อมูลของแต่ละสถาบัน</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 max-h-24 overflow-y-auto pr-1">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedHoldingLib(null)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                        selectedHoldingLib === null
+                          ? 'bg-slate-900 text-white shadow-sm'
+                          : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <span>🌐</span>
+                      <span>ข้อมูลกลาง (UC-TAL)</span>
+                    </button>
+                    {holdingLibs.map((lib: any, lIdx: number) => {
+                      const isSelected = selectedHoldingLib?.symbol === lib.symbol || selectedHoldingLib?.nameTh === lib.nameTh;
+                      return (
+                        <button
+                          key={lIdx}
+                          type="button"
+                          onClick={() => setSelectedHoldingLib(lib)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                            isSelected
+                              ? 'bg-amber-400 text-slate-950 font-bold shadow-sm ring-2 ring-amber-400'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 hover:border-amber-300'
+                          }`}
+                        >
+                          <span className="font-mono text-[10px] px-1 rounded bg-slate-100/80 text-slate-900">{lib.symbol}</span>
+                          <span>{lib.nameTh || lib.nameEn}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* MARC Tag Table (Exact match to UC-TAL ThaiLIS view) */}
+              <div className="flex-1 overflow-y-auto max-h-[56vh] pr-1">
+                <table className="w-full text-left border-collapse text-xs sm:text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-900">
+                      <th className="py-2.5 px-3 font-bold w-24 sm:w-28">Tag</th>
+                      <th className="py-2.5 px-3 font-bold w-24 sm:w-28">Indicator1</th>
+                      <th className="py-2.5 px-3 font-bold w-24 sm:w-28">Indicator2</th>
+                      <th className="py-2.5 px-3 font-bold">Subfield</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-sans">
+                    {marcTagsList.map((tag, tIdx) => (
+                      <tr key={tIdx} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-2.5 px-3 font-semibold text-slate-900 align-top">
+                          <div className="flex items-center gap-1.5">
+                            <span>{tag.tagID}</span>
+                            {tag.tagID === '520' && tag.fromInternet && (
+                              <span className="text-[10px] font-normal px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 hidden sm:inline" title="ดึงข้อมูลเรื่องย่ออัตโนมัติจากอินเทอร์เน็ต">
+                                ✨ เรื่องย่อจากอินเทอร์เน็ต
+                              </span>
+                            )}
+                            {tag.tagID === '040' && selectedHoldingLib && (
+                              <span className="text-[10px] font-mono px-1 rounded bg-amber-100 text-amber-900 border border-amber-200 hidden sm:inline">
+                                {selectedHoldingLib.symbol}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-700 align-top font-mono">
+                          {tag.indc1 && tag.indc1.trim() ? tag.indc1 : ''}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-700 align-top font-mono">
+                          {tag.indc2 && tag.indc2.trim() ? tag.indc2 : ''}
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-800 break-words leading-relaxed align-top">
+                          {tag.data}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleCopyMarcContent}
+                    className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>คัดลอก MARC ทั้งหมด</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleImportFromUctal(viewingMarcDetail, selectedHoldingLib);
+                      setViewingMarcDetail(null);
+                    }}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-md cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>
+                      {selectedHoldingLib
+                        ? `นำเข้าตาราง MARC 21 (ดึงข้อมูลทั้งหมดของ ${selectedHoldingLib.symbol})`
+                        : 'นำเข้าตาราง MARC 21 (ดึงข้อมูลทั้งหมด)'}
+                    </span>
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setViewingMarcDetail(null)}
+                  className="px-6 py-2 bg-indigo-50/70 hover:bg-indigo-100 text-indigo-950 font-medium text-xs sm:text-sm rounded-xl transition cursor-pointer shadow-sm"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* DELETE CONFIRMATION MODAL FOR MARC21 GENERATOR */}
+      {deleteConfirmTarget === 'selected' && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-rose-200 overflow-hidden">
+            <div className="p-5 bg-rose-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5 font-bold text-base">
+                <AlertTriangle className="h-5 w-5 text-amber-300 shrink-0" />
+                <span>ยืนยันการลบ {selectedIds.size} รายการที่เลือก</span>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setDeleteConfirmTarget(null)} 
+                className="p-1 hover:bg-rose-700 rounded-full transition text-white/80 hover:text-white cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="space-y-2">
+                <p className="text-xs text-slate-700 font-medium">
+                  คุณแน่ใจหรือว่าต้องการลบรายการที่เลือกจำนวน <strong className="text-rose-600 font-bold">{selectedIds.size}</strong> รายการ ออกจากตารางสร้าง MARC 21?
+                </p>
+                <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl p-2 bg-slate-50 divide-y divide-slate-100 text-xs">
+                  {records.filter(r => selectedIds.has(r.id)).map((r, idx) => (
+                    <div key={r.id} className="py-1.5 px-2 flex justify-between gap-2">
+                      <span className="font-bold text-slate-800 truncate">{idx + 1}. {r.title_245a || 'ไม่ระบุชื่อเรื่อง'}</span>
+                      <span className="font-mono text-slate-500 shrink-0">{r.accession_no}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900 space-y-1">
+                <div className="font-bold text-rose-950 flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
+                  <span>คำเตือน: ยืนยันการลบรายการ</span>
+                </div>
+                <p className="text-slate-700 leading-relaxed">
+                  รายการที่เลือกจะถูกตัดออกจากตารางสร้าง MARC 21 และระบบทันที
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-100">
+                <button 
+                  type="button" 
+                  onClick={() => setDeleteConfirmTarget(null)} 
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    confirmDeleteSelectedExecution();
+                  }} 
+                  className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs transition shadow-md shadow-rose-600/30 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>ยืนยันการลบ</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
