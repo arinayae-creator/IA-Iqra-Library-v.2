@@ -365,17 +365,62 @@ export function generateMarcTagsFromRecord(r: Marc21Record): MarcTagItem[] {
 // Official UC-TAL ThaiLIS (https://uc.thailis.or.th) REST API Client
 let cachedThaiLISToken: { token: string; expiresAt: number } | null = null;
 
+async function fetchWithProxyFallback(url: string, options: any = {}): Promise<Response> {
+  const signal = options.signal;
+  
+  // 1. Try Direct Fetch first
+  try {
+    const res = await fetch(url, options);
+    if (res.ok) return res;
+  } catch (err) {
+    console.warn(`[Proxy Fallback] Direct fetch to ${url} failed, trying proxy...`, err);
+  }
+  
+  // 2. Try corsproxy.io
+  try {
+    const proxiedUrl = `https://corsproxy.io/?${encodeURIComponent(url)}`;
+    const res = await fetch(proxiedUrl, {
+      ...options,
+      signal: signal
+    });
+    if (res.ok) {
+      console.log(`[Proxy Fallback] Successfully fetched ${url} via corsproxy.io!`);
+      return res;
+    }
+  } catch (proxyErr) {
+    console.warn(`[Proxy Fallback] corsproxy.io failed for ${url}, trying allorigins...`, proxyErr);
+  }
+  
+  // 3. Try allorigins.win
+  try {
+    const proxiedUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxiedUrl, {
+      ...options,
+      signal: signal
+    });
+    if (res.ok) {
+      console.log(`[Proxy Fallback] Successfully fetched ${url} via allorigins!`);
+      return res;
+    }
+  } catch (aoErr) {
+    console.warn(`[Proxy Fallback] allorigins failed for ${url}`, aoErr);
+  }
+  
+  // Last resort
+  return await fetch(url, options);
+}
+
 async function getThaiLISToken(): Promise<string | null> {
   if (cachedThaiLISToken && Date.now() < cachedThaiLISToken.expiresAt - 60000) {
     return cachedThaiLISToken.token;
   }
   try {
     const apiKey = 'cc6dd232c9740e9ddcf00a66fea88c335af8d6a8befe3ccf35122022c7a30f96';
-    const res = await fetch('https://ucopacapi.walaiautolib.com/ucopacapi/v1/Token/Issue', {
+    const res = await fetchWithProxyFallback('https://ucopacapi.walaiautolib.com/ucopacapi/v1/Token/Issue', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey },
       body: JSON.stringify({}),
-      signal: AbortSignal.timeout(3500)
+      signal: AbortSignal.timeout(5000)
     });
     if (res.ok) {
       const data = await res.json();
@@ -604,14 +649,14 @@ async function searchThaiLISUCTAL(keyword: string): Promise<any> {
     if (!token) return null;
 
     const payload = [{ field: 'KEYWORD', value: keyword, operator: '' }];
-    const searchRes = await fetch('https://ucopacapi.walaiautolib.com/ucopacapi/v1/Retrive/KeywordSearch?npage=1&perpage=5&orderby=&ipaddress=', {
+    const searchRes = await fetchWithProxyFallback('https://ucopacapi.walaiautolib.com/ucopacapi/v1/Retrive/KeywordSearch?npage=1&perpage=5&orderby=&ipaddress=', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + token,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(3500)
+      signal: AbortSignal.timeout(5000)
     });
 
     if (searchRes.ok) {
@@ -625,9 +670,9 @@ async function searchThaiLISUCTAL(keyword: string): Promise<any> {
         let marcRecords: MarcTagItem[] = [];
         if (bibId) {
           try {
-            const marcRes = await fetch(`https://ucopacapi.walaiautolib.com/ucopacapi/v1/Biblio/GetMARC?bibid=${bibId}`, {
+            const marcRes = await fetchWithProxyFallback(`https://ucopacapi.walaiautolib.com/ucopacapi/v1/Biblio/GetMARC?bibid=${bibId}`, {
               headers: { 'Authorization': 'Bearer ' + token },
-              signal: AbortSignal.timeout(3500)
+              signal: AbortSignal.timeout(5000)
             });
             if (marcRes.ok) {
               const mJson = await marcRes.json();
