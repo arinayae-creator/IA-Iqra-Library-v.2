@@ -2010,25 +2010,23 @@ export default function App() {
 
           {/* Quick actions, Supabase Sync & Role select */}
           <div className="flex items-center space-x-2 sm:space-x-3">
-            {/* Real-time Indicator Pill */}
-            <div 
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition ${
-                isRealtimeConnected 
-                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
-                  : 'bg-amber-50 text-amber-800 border-amber-200'
-              }`}
-              title={isRealtimeConnected ? `เชื่อมต่อฐานข้อมูล Supabase แบบเรียลไทม์ (อัปเดตล่าสุด ${lastRealtimeEventTime})` : 'กำลังเชื่อมต่อใหม่...'}
+            {/* Real-time Indicator Pill Button Link */}
+            <a 
+              href="https://ais-pre-cixcmspiytr5hozs4mesz5-681517703334.asia-southeast1.run.app"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 hover:border-emerald-300 shadow-sm cursor-pointer"
+              title="คลิกเพื่อไปยังระบบหลัก (Cloud Run)"
             >
               <span className="relative flex h-2 w-2">
-                {isRealtimeConnected && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                )}
-                <span className={`relative inline-flex rounded-full h-2 w-2 ${isRealtimeConnected ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
               <span className="hidden md:inline font-bold">
-                {isRealtimeConnected ? 'เรียลไทม์ (Live)' : 'เชื่อมต่อใหม่...'}
+                MARC21 (Preview)
               </span>
-            </div>
+              <ExternalLink className="h-3 w-3 text-emerald-600" />
+            </a>
 
             <button
               onClick={() => handleSyncSheet()}
