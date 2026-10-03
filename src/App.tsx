@@ -183,6 +183,72 @@ export default function App() {
   // Client-side in-memory cache for standalone/Vercel environments
   const clientAllBooksRef = useRef<Book[]>([]);
 
+  const healBookRecord = (b: Book): Book => {
+    if (!b) return b;
+    const healed = { ...b };
+    
+    // 1. Heal Title if empty or null
+    if (!healed.title || String(healed.title).trim() === '') {
+      const descMatch = String(healed.description || '').match(/หนังสือ\s+["“'‘]([^"”'’]+)["”'’]/);
+      if (descMatch) {
+        healed.title = descMatch[1].trim();
+      } else if (healed.keywords) {
+        healed.title = String(healed.keywords).split(',')[0].trim();
+      } else {
+        healed.title = `หนังสือทะเบียนเลขที่ ${healed.accession_no || b.barcode || '-'}`;
+      }
+    }
+
+    // 2. Heal Author if empty, null or 'ไม่ระบุผู้แต่ง'
+    if (!healed.author || String(healed.author).trim() === '' || healed.author === 'ไม่ระบุผู้แต่ง') {
+      const descMatch = String(healed.description || '').match(/โดย\s+([^.]+?)\s+สำนักพิมพ์/);
+      if (descMatch) {
+        healed.author = descMatch[1].trim();
+      } else if (healed.keywords) {
+        const kw = String(healed.keywords).split(',');
+        if (kw.length > 1) {
+          healed.author = kw[1].trim();
+        }
+      }
+      if (!healed.author || String(healed.author).trim() === '') {
+        healed.author = 'ไม่ระบุผู้แต่ง';
+      }
+    }
+
+    // 3. Heal Publisher if empty, null or 'ไม่ระบุสำนักพิมพ์'
+    if (!healed.publisher || String(healed.publisher).trim() === '' || healed.publisher === 'ไม่ระบุสำนักพิมพ์') {
+      const descMatch = String(healed.description || '').match(/สำนักพิมพ์\s+([^.]+?)$/);
+      const kwMatch = String(healed.keywords || '').match(/สำนักพิมพ์\s+([^,]+)/);
+      if (descMatch) {
+        healed.publisher = descMatch[1].trim();
+      } else if (kwMatch) {
+        healed.publisher = kwMatch[1].trim();
+      } else {
+        healed.publisher = 'ไม่ระบุสำนักพิมพ์';
+      }
+    }
+
+    // 4. Heal Call Number if empty or null
+    if (!healed.call_number || String(healed.call_number).trim() === '') {
+      const ddcVal = healed.ddc || '000';
+      const kw = String(healed.keywords || '').toLowerCase();
+      const cutMatch = kw.match(/หมวด\s*(\d+)/) || kw.match(/หมวด\s*([ก-ฮ])/);
+      healed.call_number = `${ddcVal} ${cutMatch ? cutMatch[0] : ''}`.trim();
+    }
+
+    // 5. Heal Category if empty or null
+    if (!healed.category || String(healed.category).trim() === '') {
+      const kw = String(healed.keywords || '').split(',');
+      if (kw.length > 4) {
+        healed.category = kw[4].trim();
+      } else {
+        healed.category = 'ทั่วไป';
+      }
+    }
+
+    return healed;
+  };
+
   const loadAllBooksIntoClientCache = async (): Promise<Book[]> => {
     if (clientAllBooksRef.current.length > 0) {
       return clientAllBooksRef.current;
@@ -197,7 +263,7 @@ export default function App() {
         ...(r1.data || []),
         ...(r2.data || []),
         ...(r3.data || [])
-      ] as Book[];
+      ].map(healBookRecord) as Book[];
       if (combined.length > 0) {
         clientAllBooksRef.current = combined;
       }
