@@ -641,6 +641,73 @@ async function mergeSupabaseCustomizations() {
   }
 }
 
+// Self-healing / Auto-recovery logic to reconstruct missing titles, authors, and metadata from rich description/keywords
+function healBookRecord(b: any): any {
+  if (!b) return b;
+  const healed = { ...b };
+  
+  // 1. Heal Title if empty or null
+  if (!healed.title || String(healed.title).trim() === '') {
+    const descMatch = String(healed.description || '').match(/หนังสือ\s+["“'‘]([^"”'’]+)["”'’]/);
+    if (descMatch) {
+      healed.title = descMatch[1].trim();
+    } else if (healed.keywords) {
+      healed.title = String(healed.keywords).split(',')[0].trim();
+    } else {
+      healed.title = `หนังสือทะเบียนเลขที่ ${healed.accession_no || healed.barcode || '-'}`;
+    }
+  }
+
+  // 2. Heal Author if empty, null or 'ไม่ระบุผู้แต่ง'
+  if (!healed.author || String(healed.author).trim() === '' || healed.author === 'ไม่ระบุผู้แต่ง') {
+    const descMatch = String(healed.description || '').match(/โดย\s+([^.]+?)\s+สำนักพิมพ์/);
+    if (descMatch) {
+      healed.author = descMatch[1].trim();
+    } else if (healed.keywords) {
+      const kw = String(healed.keywords).split(',');
+      if (kw.length > 1) {
+        healed.author = kw[1].trim();
+      }
+    }
+    if (!healed.author || String(healed.author).trim() === '') {
+      healed.author = 'ไม่ระบุผู้แต่ง';
+    }
+  }
+
+  // 3. Heal Publisher if empty, null or 'ไม่ระบุสำนักพิมพ์'
+  if (!healed.publisher || String(healed.publisher).trim() === '' || healed.publisher === 'ไม่ระบุสำนักพิมพ์') {
+    const descMatch = String(healed.description || '').match(/สำนักพิมพ์\s+([^.]+?)$/);
+    const kwMatch = String(healed.keywords || '').match(/สำนักพิมพ์\s+([^,]+)/);
+    if (descMatch) {
+      healed.publisher = descMatch[1].trim();
+    } else if (kwMatch) {
+      healed.publisher = kwMatch[1].trim();
+    } else {
+      healed.publisher = 'ไม่ระบุสำนักพิมพ์';
+    }
+  }
+
+  // 4. Heal Call Number if empty or null
+  if (!healed.call_number || String(healed.call_number).trim() === '') {
+    const ddcVal = healed.ddc || '000';
+    const kw = String(healed.keywords || '').toLowerCase();
+    const cutMatch = kw.match(/หมวด\s*(\d+)/) || kw.match(/หมวด\s*([ก-ฮ])/);
+    healed.call_number = `${ddcVal} ${cutMatch ? cutMatch[0] : ''}`.trim();
+  }
+
+  // 5. Heal Category if empty or null
+  if (!healed.category || String(healed.category).trim() === '') {
+    const kw = String(healed.keywords || '').split(',');
+    if (kw.length > 4) {
+      healed.category = kw[4].trim();
+    } else {
+      healed.category = 'ทั่วไป';
+    }
+  }
+
+  return healed;
+}
+
 // Periodically pull any books from Supabase that are missing in the server cache
 async function syncAllBooksFromSupabase() {
   try {
@@ -656,18 +723,19 @@ async function syncAllBooksFromSupabase() {
       const newCache = [...cachedBooks];
       
       supaBooks.forEach(sb => {
-        if (!cacheMap.has(sb.id)) {
-          newCache.push({ ...sb, source: 'ฐานข้อมูล Supabase' });
+        const healedSb = healBookRecord(sb);
+        if (!cacheMap.has(healedSb.id)) {
+          newCache.push({ ...healedSb, source: 'ฐานข้อมูล Supabase' });
           newAdded++;
         } else {
           // Check if updated_at is newer
-          const cb = cacheMap.get(sb.id);
-          const sbUpdate = sb.updated_at ? new Date(sb.updated_at).getTime() : 0;
+          const cb = cacheMap.get(healedSb.id);
+          const sbUpdate = healedSb.updated_at ? new Date(healedSb.updated_at).getTime() : 0;
           const cbUpdate = cb.updated_at ? new Date(cb.updated_at).getTime() : 0;
           if (sbUpdate > cbUpdate) {
-            const idx = newCache.findIndex(item => item.id === sb.id);
+            const idx = newCache.findIndex(item => item.id === healedSb.id);
             if (idx !== -1) {
-              newCache[idx] = { ...newCache[idx], ...sb, source: 'ฐานข้อมูล Supabase' };
+              newCache[idx] = { ...newCache[idx], ...healedSb, source: 'ฐานข้อมูล Supabase' };
               updatedCount++;
             }
           }
@@ -716,7 +784,7 @@ async function initializeCache() {
 
     if (allSupaBooks.length > 0) {
       cachedBooks = allSupaBooks.map(b => ({
-        ...b,
+        ...healBookRecord(b),
         source: 'ฐานข้อมูล Supabase'
       }));
       
@@ -762,7 +830,7 @@ async function initializeCache() {
       const raw = fs.readFileSync(CACHE_FILE_PATH, 'utf8');
       const data = JSON.parse(raw);
       if (data && Array.isArray(data.books) && data.books.length > 0) {
-        cachedBooks = data.books;
+        cachedBooks = data.books.map(healBookRecord);
         cachedCategories = Array.isArray(data.categories) ? data.categories : [];
         cachedScanHistory = Array.isArray(data.scanHistory) ? data.scanHistory : [];
         cachedSheetSyncInfo = data.sheetSyncInfo || null;
@@ -1155,11 +1223,14 @@ app.get('/api/books', async (req, res) => {
     const qPublisher = req.query.publisher ? String(req.query.publisher) : '';
     const qSort = req.query.sort ? String(req.query.sort) : 'title';
 
-    let books: any[] = cachedBooks.map(b => ({
-      ...b,
-      source: 'ฐานข้อมูล Supabase',
-      accession_no: b.accession_no || b.barcode || ''
-    }));
+    let books: any[] = cachedBooks.map(b => {
+      const healed = healBookRecord(b);
+      return {
+        ...healed,
+        source: 'ฐานข้อมูล Supabase',
+        accession_no: healed.accession_no || healed.barcode || ''
+      };
+    });
 
     // Client-side filtering
     if (qCategory) {
