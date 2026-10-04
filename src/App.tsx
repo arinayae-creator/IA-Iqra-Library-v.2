@@ -69,6 +69,9 @@ interface Book {
   status: 'พร้อมให้บริการ' | 'ถูกยืมแล้ว' | 'ปรับปรุง';
   source?: string;
   created_at?: string;
+  series?: string;
+  translator?: string;
+  price?: string;
 }
 
 interface Category {
@@ -410,7 +413,6 @@ export default function App() {
         if (selectedBookDetail && selectedBookDetail.id === bookId) {
           setSelectedBookDetail({ ...selectedBookDetail, cover_image: coverFound!, illustration: coverFound!, cover_source: coverSource });
         }
-        alert('✨ ดึงภาพหน้าปกจริงจากอินเทอร์เน็ตและบันทึกลงระบบสำเร็จแล้ว!');
       } else {
         alert('ไม่พบภาพหน้าปกที่ตรงกันจากอินเทอร์เน็ต สามารถใช้ปุ่ม "แก้ไขภาพปก" เพื่อใส่ลิงก์รูปภาพโดยตรงได้ครับ');
       }
@@ -1755,54 +1757,84 @@ export default function App() {
         const headers: string[] = rawJson[0].map((h: any) => String(h || '').trim().toLowerCase());
         const parsedBooks: any[] = [];
 
-        // Helper to find column index by variations
-        const findCol = (keywords: string[]) => {
-          return headers.findIndex(h => keywords.some(k => h.includes(k)));
+        // Helper to find column index by variations or default template index fallback
+        const findCol = (keywords: string[], defaultIdx: number) => {
+          const found = headers.findIndex(h => keywords.some(k => h.includes(k)));
+          return found >= 0 ? found : defaultIdx;
         };
 
-        const titleIdx = findCol(['title', 'ชื่อ', 'ชื่อเรื่อง']);
-        const authorIdx = findCol(['author', 'ผู้แต่ง', 'ผู้เขียน']);
-        const isbnIdx = findCol(['isbn', 'รหัส']);
-        const accessionIdx = findCol(['ทะเบียน', 'accession', 'reg']);
-        const pubIdx = findCol(['publisher', 'สำนักพิมพ์']);
-        const yearIdx = findCol(['year', 'ปี', 'ปีพิมพ์']);
-        const catIdx = findCol(['category', 'หมวดหมู่', 'หมวด']);
-        const callIdx = findCol(['call', 'เลขเรียก']);
-        const barcodeIdx = findCol(['barcode', 'บาร์โค้ด']);
-        const pagesIdx = findCol(['page', 'หน้า']);
-        const descIdx = findCol(['desc', 'คำอธิบาย', 'เรื่องย่อ']);
+        const titleIdx = findCol(['title', 'ชื่อเรื่อง', '245 $a'], 6);
+        const subtitleIdx = findCol(['subtitle', 'ชื่อเรื่องย่อย', '245 $b'], 7);
+        const authorIdx = findCol(['author', 'ผู้แต่ง', '100 $a'], 4);
+        const coAuthorsIdx = findCol(['co_author', 'ผู้แต่งร่วม', '245 $c'], 5);
+        const isbnIdx = findCol(['isbn', '020 isbn', 'รหัส'], 3);
+        const accessionIdx = findCol(['ทะเบียน', 'accession', 'reg'], 2);
+        const barcodeIdx = findCol(['barcode', 'บาร์โค้ด'], 2); // default to same as accession
+        const ddcIdx = findCol(['ddc', '082 $a'], 9);
+        const callSubIdx = findCol(['call_sub', '082 $b'], 10);
+        const pubIdx = findCol(['publisher', 'สำนักพิมพ์', '260 $b'], 12);
+        const pubPlaceIdx = findCol(['publication_place', 'สถานที่พิมพ์', '260 $a'], 11);
+        const yearIdx = findCol(['year', 'ปีที่พิมพ์', 'ปีพิมพ์', '260 $c'], 13);
+        const pagesIdx = findCol(['page', 'จำนวนหน้า', '300 $a'], 14);
+        const illustrationIdx = findCol(['illustration', 'ภาพประกอบ', '300 $b'], 15);
+        const catIdx = findCol(['category', 'หมวดหมู่จัดเก็บ', 'หมวดหมู่'], 26);
+        const subjectIdx = findCol(['subject', 'หัวเรื่อง 1', '650 $a'], 16);
+        const descIdx = findCol(['desc', 'คำอธิบาย', 'เรื่องย่อ'], 18);
+        const editionIdx = findCol(['edition', 'พิมพ์ครั้งที่'], 19);
+        const priceIdx = findCol(['price', 'ราคา'], 20);
+        const seriesIdx = findCol(['series', 'ชุดหนังสือ'], 21);
+        const translatorIdx = findCol(['translator', 'ผู้แปล'], 22);
+        const statusIdx = findCol(['status', 'สถานะ'], 27);
 
         for (let i = 1; i < rawJson.length; i++) {
           const row = rawJson[i];
-          if (!row || row.length === 0 || !row[titleIdx >= 0 ? titleIdx : 0]) continue;
+          if (!row || row.length === 0 || !row[titleIdx]) continue;
 
-          const rawAcc = accessionIdx >= 0 && row[accessionIdx] ? String(row[accessionIdx]).trim() : '';
-          const rawBar = barcodeIdx >= 0 && row[barcodeIdx] ? String(row[barcodeIdx]).trim() : '';
+          const rawAcc = row[accessionIdx] !== undefined ? String(row[accessionIdx]).trim() : '';
+          const rawBar = row[barcodeIdx] !== undefined ? String(row[barcodeIdx]).trim() : '';
           const accNo = rawAcc || rawBar || String(i);
           const barCode = rawBar || rawAcc || `B${Math.random().toString().substring(2, 9)}`;
 
+          const ddcVal = String(row[ddcIdx] || '').trim();
+          const callSubVal = String(row[callSubIdx] || '').trim();
+          const callNumber = (ddcVal && callSubVal) ? `${ddcVal} ${callSubVal}` : (ddcVal || callSubVal || '000');
+
+          const cleanIsbn = String(row[isbnIdx] || '').replace(/[^a-zA-Z0-9]/g, '');
+          let coverImage = (cleanIsbn.length >= 10)
+            ? `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-M.jpg?default=https%3A%2F%2Fimages.unsplash.com%2Fphoto-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600`
+            : 'https://images.unsplash.com/photo-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600';
+
+          const rawIllus = String(row[illustrationIdx] || '').trim();
+          if (rawIllus && (rawIllus.startsWith('https://') || rawIllus.startsWith('http://'))) {
+            coverImage = rawIllus;
+          }
+
           parsedBooks.push({
-            title: String(row[titleIdx >= 0 ? titleIdx : 0] || 'ไม่ระบุชื่อเรื่อง').trim(),
-            subtitle: '',
-            author: String(authorIdx >= 0 && row[authorIdx] ? row[authorIdx] : 'ไม่ระบุผู้แต่ง').trim(),
-            co_authors: '',
-            isbn: String(isbnIdx >= 0 && row[isbnIdx] ? row[isbnIdx] : Math.random().toString().substring(2, 15)).trim(),
+            title: String(row[titleIdx] || 'ไม่ระบุชื่อเรื่อง').trim(),
+            subtitle: String(row[subtitleIdx] || '').trim(),
+            author: String(row[authorIdx] || 'ไม่ระบุผู้แต่ง').trim(),
+            co_authors: String(row[coAuthorsIdx] || '').trim(),
+            isbn: String(row[isbnIdx] || Math.random().toString().substring(2, 15)).trim(),
             accession_no: accNo,
-            publisher: String(pubIdx >= 0 && row[pubIdx] ? row[pubIdx] : 'ไม่ระบุสำนักพิมพ์').trim(),
-            publication_place: 'กรุงเทพฯ',
-            publication_year: String(yearIdx >= 0 && row[yearIdx] ? row[yearIdx] : new Date().getFullYear()).trim(),
-            edition: 'พิมพ์ครั้งที่ 1',
-            pages: String(pagesIdx >= 0 && row[pagesIdx] ? row[pagesIdx] : '200').trim(),
-            language: 'ไทย',
-            category: String(catIdx >= 0 && row[catIdx] ? row[catIdx] : 'ทั่วไป').trim(),
-            subject: '',
-            keywords: '',
-            call_number: String(callIdx >= 0 && row[callIdx] ? row[callIdx] : '000').trim(),
-            ddc: '',
             barcode: barCode,
-            cover_image: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600',
-            description: String(descIdx >= 0 && row[descIdx] ? row[descIdx] : 'นำเข้าจากไฟล์ Excel').trim(),
-            status: 'พร้อมให้บริการ'
+            publisher: String(row[pubIdx] || 'ไม่ระบุสำนักพิมพ์').trim(),
+            publication_place: String(row[pubPlaceIdx] || 'กรุงเทพฯ').trim(),
+            publication_year: String(row[yearIdx] || new Date().getFullYear()).trim(),
+            edition: String(row[editionIdx] || 'พิมพ์ครั้งที่ 1').trim(),
+            pages: String(row[pagesIdx] || '200').trim(),
+            language: 'ไทย',
+            category: String(row[catIdx] || row[subjectIdx] || 'ทั่วไป').trim(),
+            subject: String(row[subjectIdx] || '').trim(),
+            keywords: `${row[titleIdx] || ''}, ${row[authorIdx] || ''}, ${row[catIdx] || ''}`,
+            call_number: callNumber,
+            ddc: ddcVal,
+            price: String(row[priceIdx] || '').trim(),
+            series: String(row[seriesIdx] || '').trim(),
+            translator: String(row[translatorIdx] || '').trim(),
+            illustration: rawIllus,
+            cover_image: coverImage,
+            description: String(row[descIdx] || 'นำเข้าจากไฟล์ Excel').trim(),
+            status: String(row[statusIdx] || 'พร้อมให้บริการ').trim()
           });
         }
 
@@ -1846,93 +1878,227 @@ export default function App() {
   const downloadSampleExcel = () => {
     const sampleRows = [
       {
-        'เลขทะเบียน (Accession No.)': '1',
-        'ชื่อเรื่อง (Title)': 'คิดแบบย่อยิงใหญ่',
-        'ผู้แต่ง (Author)': 'มาร์ค วิลสัน',
-        'ISBN': '9786161234567',
-        'สำนักพิมพ์ (Publisher)': 'วีเลิร์น',
-        'ปีที่พิมพ์ (Year)': '2566',
-        'หมวดหมู่ (Category)': 'พัฒนาตนเอง',
-        'เลขเรียกหนังสือ (Call Number)': '158.1 ม17ค',
-        'บาร์โค้ด (Barcode)': 'B0000088',
-        'จำนวนหน้า (Pages)': '280',
-        'คำอธิบาย (Description)': 'ข้อคิดสร้างพลังชีวิตและความคิดก้าวหน้า'
+        'วันที่': '04/10/2026',
+        'คอลัมน์1': '1',
+        'เลขทะเบียน': '00001',
+        '020 ISBN': '9786161852467',
+        '100 $a ผู้แต่ง': 'งามพรรณ เวชชาชีวะ',
+        '245 $c ผู้แต่งร่วม': '',
+        '245 $a ชื่อเรื่อง': 'ความสุขของกะทิ',
+        '245 $b ชื่อเรื่องย่อย': 'ฉบับครบรอบ 20 ปี',
+        'ผู้เขียน': 'งามพรรณ เวชชาชีวะ',
+        '082 $a': '895.913',
+        '082 $b': 'ง241ค',
+        '260 $a สถานที่พิมพ์': 'กรุงเทพฯ',
+        '260 $b สำนักพิมพ์': 'แพรวสำนักพิมพ์',
+        '260 $c ปีที่พิมพ์': '2566',
+        '300 $a จำนวนหน้า': '112',
+        '300 $b ภาพประกอบ': 'มีภาพประกอบสีสันสวยงาม',
+        '650 $a หัวเรื่อง 1': 'นวนิยายไทย',
+        '650 $x ย่อยหัวเรื่อง': 'วรรณกรรมเยาวชน',
+        'คำอธิบาย': 'เรื่องราวเสน่ห์ของเด็กหญิงกะทิที่ใช้ชีวิตเรียบง่ายในบ้านสวนริมคลองร่วมกับตาและยาย',
+        'พิมพ์ครั้งที่': 'พิมพ์ครั้งที่ 15',
+        'ราคา': '155',
+        'ชุดหนังสือ': '',
+        'ผู้แปล': '',
+        'ปีแต่ง': '2546',
+        'หัวเรื่อง 2': 'วรรณกรรมสร้างสรรค์ยอดเยี่ยมแห่งอาเซียน',
+        'หัวเรื่อง 3': '',
+        'หมวดหมู่จัดเก็บ': 'วรรณกรรมเยาวชน',
+        'สถานะ': 'พร้อมให้บริการ',
+        'จำนวนเล่ม': '1'
       },
       {
-        'เลขทะเบียน (Accession No.)': '2',
-        'ชื่อเรื่อง (Title)': 'จิตวิทยาการอ่านใจ',
-        'ผู้แต่ง (Author)': 'ซาโตชิ นากาโมโตะ',
-        'ISBN': '9786169876543',
-        'สำนักพิมพ์ (Publisher)': 'อมรินทร์',
-        'ปีที่พิมพ์ (Year)': '2565',
-        'หมวดหมู่ (Category)': 'จิตวิทยาประยุกต์',
-        'เลขเรียกหนังสือ (Call Number)': '150.1 ซ45จ',
-        'บาร์โค้ด (Barcode)': 'B0000089',
-        'จำนวนหน้า (Pages)': '220',
-        'คำอธิบาย (Description)': 'เทคนิคการเข้าใจภาษากายและอารมณ์ความรู้สึก'
+        'วันที่': '04/10/2026',
+        'คอลัมน์1': '2',
+        'เลขทะเบียน': '00002',
+        '020 ISBN': '9786160841234',
+        '100 $a ผู้แต่ง': 'สมนึก อิงศรีเลิศ',
+        '245 $c ผู้แต่งร่วม': '',
+        '245 $a ชื่อเรื่อง': 'เรียนรู้ระบบฐานข้อมูลและการจัดการดาต้า',
+        '245 $b ชื่อเรื่องย่อย': 'คู่มือศึกษา SQL และ NoSQL',
+        'ผู้เขียน': 'สมนึก อิงศรีเลิศ',
+        '082 $a': '005.74',
+        '082 $b': 'ส254ร',
+        '260 $a สถานที่พิมพ์': 'กรุงเทพฯ',
+        '260 $b สำนักพิมพ์': 'ซีเอ็ดยูเคชั่น',
+        '260 $c ปีที่พิมพ์': '2565',
+        '300 $a จำนวนหน้า': '320',
+        '300 $b ภาพประกอบ': 'ภาพประกอบตารางและไดอะแกรม',
+        '650 $a หัวเรื่อง 1': 'ฐานข้อมูล',
+        '650 $x ย่อยหัวเรื่อง': 'ระบบจัดการฐานข้อมูล',
+        'คำอธิบาย': 'เน้นปูพื้นฐานการเขียน SQL คำสั่ง Query และการออกแบบ Schema ที่ใช้งานได้จริง',
+        'พิมพ์ครั้งที่': 'พิมพ์ครั้งที่ 2',
+        'ราคา': '280',
+        'ชุดหนังสือ': 'คู่มือไอทีศึกษา',
+        'ผู้แปล': '',
+        'ปีแต่ง': '',
+        'หัวเรื่อง 2': 'การออกแบบระบบฐานข้อมูล',
+        'หัวเรื่อง 3': '',
+        'หมวดหมู่จัดเก็บ': 'คอมพิวเตอร์และเทคโนโลยี',
+        'สถานะ': 'พร้อมให้บริการ',
+        'จำนวนเล่ม': '2'
       }
     ];
 
     const ws = XLSX.utils.json_to_sheet(sampleRows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Sample_Books');
-    XLSX.writeFile(wb, 'library_books_template.xlsx');
+    XLSX.writeFile(wb, 'library_books_template_standard.xlsx');
   };
 
-  // Simple CSV Import Parser
+  // Simple CSV / Clipboard TSV Import Parser (Column-by-column according to the attached template)
   const handleCsvImport = async () => {
     if (!csvInput.trim()) return;
     const lines = csvInput.split('\n');
     let successCount = 0;
     let failCount = 0;
 
-    for (let i = 1; i < lines.length; i++) {
-      if (!lines[i].trim()) continue;
-      const values = lines[i].split(',');
-      if (values.length < 3) continue;
+    const parsedBooks: any[] = [];
+    
+    // Check if the first line is header
+    const firstLine = String(lines[0] || '').toLowerCase();
+    const hasHeader = firstLine.includes('ชื่อเรื่อง') || firstLine.includes('title') || firstLine.includes('เลขทะเบียน') || firstLine.includes('isbn') || firstLine.includes('ผู้แต่ง');
+    const startIndex = hasHeader ? 1 : 0;
 
-      const accVal = values[7]?.trim() || values[0]?.trim();
-      const book: any = {
-        title: values[0]?.trim() || 'Untitled',
-        author: values[1]?.trim() || 'Unknown',
-        isbn: values[2]?.trim() || Math.random().toString().substring(2, 15),
-        accession_no: accVal,
-        publisher: values[3]?.trim() || 'Unknown Publisher',
-        publication_year: values[4]?.trim() || '2566',
-        category: values[5]?.trim() || 'ทั่วไป',
-        call_number: values[6]?.trim() || '000',
-        subtitle: '',
-        co_authors: '',
-        publication_place: 'กรุงเทพฯ',
-        edition: 'พิมพ์ครั้งที่ 1',
-        pages: '200',
-        language: 'ไทย',
-        subject: '',
-        keywords: '',
-        ddc: '',
-        barcode: accVal || `B${Math.random().toString().substring(2, 9)}`,
-        cover_image: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600',
-        description: 'นำเข้าผ่านระบบ CSV',
-        status: 'พร้อมให้บริการ'
-      };
+    for (let i = startIndex; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
 
-      try {
-        const res = await fetch('/api/books', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(book)
-        });
-        const data = await res.json();
-        if (data.success) successCount++;
-        else failCount++;
-      } catch (e) {
-        failCount++;
+      // Split by tab (Excel clipboard) OR comma (Standard CSV)
+      const cells = line.split(line.includes('\t') ? '\t' : ',');
+      if (cells.length < 3) continue;
+
+      let book: any = {};
+
+      if (cells.length >= 15) {
+        // High fidelity column-by-column mapping according to 29-column attached template
+        const rawAcc = cells[2]?.trim();
+        const isbn = cells[3]?.trim() || Math.random().toString().substring(2, 15);
+        const author = cells[4]?.trim() || cells[8]?.trim() || 'ไม่ระบุผู้แต่ง';
+        const coAuthors = cells[5]?.trim() || '';
+        const title = cells[6]?.trim() || 'ไม่ระบุชื่อเรื่อง';
+        const subtitle = cells[7]?.trim() || '';
+        const ddc = cells[9]?.trim() || '';
+        const callSub = cells[10]?.trim() || '';
+        const callNumber = (ddc && callSub) ? `${ddc} ${callSub}` : (ddc || callSub || '000');
+        const pubPlace = cells[11]?.trim() || 'กรุงเทพฯ';
+        const publisher = cells[12]?.trim() || 'ไม่ระบุสำนักพิมพ์';
+        const pubYear = cells[13]?.trim() || new Date().getFullYear().toString();
+        const pages = cells[14]?.trim() || '200';
+        const illustration = cells[15]?.trim() || '';
+        const subject = cells[16]?.trim() || '';
+        const description = cells[18]?.trim() || 'นำเข้าจากระบบวางข้อความ';
+        const edition = cells[19]?.trim() || 'พิมพ์ครั้งที่ 1';
+        const price = cells[20]?.trim() || '';
+        const series = cells[21]?.trim() || '';
+        const translator = cells[22]?.trim() || '';
+        const category = cells[26]?.trim() || subject || 'ทั่วไป';
+        const status = cells[27]?.trim() || 'พร้อมให้บริการ';
+
+        let coverImage = (isbn.length >= 10)
+          ? `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg?default=https%3A%2F%2Fimages.unsplash.com%2Fphoto-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600`
+          : 'https://images.unsplash.com/photo-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600';
+
+        if (illustration && (illustration.startsWith('https://') || illustration.startsWith('http://'))) {
+          coverImage = illustration;
+        }
+
+        book = {
+          title,
+          subtitle,
+          author,
+          co_authors: coAuthors,
+          isbn,
+          accession_no: rawAcc || `ACC${Date.now()}_${i}`,
+          barcode: rawAcc || `B${Math.random().toString().substring(2, 9)}`,
+          publisher,
+          publication_place: pubPlace,
+          publication_year: pubYear,
+          edition,
+          pages,
+          language: 'ไทย',
+          category,
+          subject,
+          keywords: `${title}, ${author}, ${category}`,
+          call_number: callNumber,
+          ddc,
+          price,
+          series,
+          translator,
+          illustration,
+          cover_image: coverImage,
+          description,
+          status
+        };
+      } else {
+        // Fallback for simple short list
+        const title = cells[0]?.trim() || 'ไม่ระบุชื่อเรื่อง';
+        const author = cells[1]?.trim() || 'ไม่ระบุผู้แต่ง';
+        const isbn = cells[2]?.trim() || Math.random().toString().substring(2, 15);
+        const publisher = cells[3]?.trim() || 'ไม่ระบุสำนักพิมพ์';
+        const year = cells[4]?.trim() || '2566';
+        const category = cells[5]?.trim() || 'ทั่วไป';
+        const callNum = cells[6]?.trim() || '000';
+        const accNo = cells[7]?.trim() || cells[2]?.trim() || `ACC${Date.now()}_${i}`;
+
+        book = {
+          title,
+          subtitle: '',
+          author,
+          co_authors: '',
+          isbn,
+          accession_no: accNo,
+          barcode: accNo,
+          publisher,
+          publication_place: 'กรุงเทพฯ',
+          publication_year: year,
+          edition: 'พิมพ์ครั้งที่ 1',
+          pages: '200',
+          language: 'ไทย',
+          category,
+          subject: category,
+          keywords: `${title}, ${author}, ${category}`,
+          call_number: callNum,
+          ddc: '',
+          price: '',
+          series: '',
+          translator: '',
+          illustration: '',
+          cover_image: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600',
+          description: 'นำเข้าผ่านระบบวางข้อความ',
+          status: 'พร้อมให้บริการ'
+        };
       }
+
+      parsedBooks.push(book);
     }
 
-    alert(`นำเข้าเสร็จสิ้น! สำเร็จ ${successCount} รายการ, ล้มเหลว ${failCount} รายการ`);
-    setCsvInput('');
-    fetchBooks();
+    if (parsedBooks.length === 0) {
+      alert('ไม่พบข้อมูลที่ตรงรูปแบบฟิลด์ที่จะนำเข้าได้');
+      return;
+    }
+
+    setIsImporting(true);
+    try {
+      const res = await fetch('/api/books/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ books: parsedBooks })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(`📋 นำเข้าข้อมูลคัดลอกจาก Excel สำเร็จ ${data.imported} เล่ม! (ล้มเหลว ${data.failed} เล่ม) ข้อมูลถูกซิงค์เข้าสู่ฐานข้อมูลเรียบร้อยแล้ว`);
+        setCsvInput('');
+        fetchBooks();
+      } else {
+        alert('เกิดข้อผิดพลาดในการบันทึกข้อมูล: ' + (data.error || 'ไม่รู้จัก'));
+      }
+    } catch (e: any) {
+      alert('Error: ' + e.message);
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   // Format bibliography text according to Standard (Specification 10)
@@ -3511,22 +3677,23 @@ export default function App() {
                   </span>
                 </div>
 
-                {/* Method 2: CSV Direct Paste */}
+                {/* Method 2: CSV Direct Paste / Clipboard Excel */}
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-600 block">หรือวางข้อความรูปแบบ CSV โดยตรง:</label>
+                  <label className="text-xs font-bold text-slate-600 block">หรือวางคอลัมน์ที่คัดลอกจาก Excel โดยตรง (TSV/CSV):</label>
+                  <p className="text-[10px] text-slate-400">สามารถคลุมดำตารางข้อมูลใน Excel (คัดลอกทุกคอลัมน์ตามไฟล์เท็มเพลตมาตรฐาน) แล้วนำมาวางในช่องด้านล่างนี้ได้ทันที</p>
                   <textarea 
                     rows={4}
                     value={csvInput}
                     onChange={(e) => setCsvInput(e.target.value)}
-                    placeholder="title,author,isbn,publisher,year,category,call_number&#10;คิดแบบย่อยิงใหญ่,มาร์ควิลสัน,97812345678,ดีบุ๊คส์,2565,พัฒนาตนเอง,158.1 ม17ค"
+                    placeholder="[คัดลอกเซลล์ข้อมูลจาก Excel แล้วกดวางที่นี่ได้โดยตรง ระบบจะจัดเรียงข้อมูลตามฟิลด์มาตรฐานให้อย่างสมบูรณ์]"
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-1 focus:ring-amber-500"
                   />
                   <button 
                     onClick={handleCsvImport}
                     disabled={!csvInput.trim()}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs transition flex items-center gap-1.5"
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white font-bold rounded-lg text-xs transition flex items-center gap-1.5 cursor-pointer"
                   >
-                    <Upload className="h-3.5 w-3.5" /> นำเข้าจากข้อความ CSV
+                    <Upload className="h-3.5 w-3.5" /> นำเข้าจากข้อมูลตารางที่วาง
                   </button>
                 </div>
               </div>
@@ -3963,136 +4130,298 @@ export default function App() {
       {/* EDIT MODAL FOR ADMIN */}
       {editingBook && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <form onSubmit={handleUpdateBook} className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-200">
-            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <h3 className="font-bold text-slate-900 text-lg">แก้ไขรายละเอียดหนังสือ</h3>
-              <button type="button" onClick={() => setEditingBook(null)} className="text-slate-500 hover:text-slate-700">✕</button>
+          <form onSubmit={handleUpdateBook} className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-slate-200">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50 sticky top-0 z-10">
+              <div>
+                <h3 className="font-bold text-slate-900 text-lg">📝 แก้ไขรายละเอียดหนังสือ (ข้อมูลบรรณานุกรมฉบับเต็ม)</h3>
+                <p className="text-xs text-slate-500 mt-0.5">แก้ไขรายละเอียดทุกคอลัมน์มาตรฐานตามโครงสร้างไฟล์เท็มเพลตสากล</p>
+              </div>
+              <button type="button" onClick={() => setEditingBook(null)} className="p-1.5 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-500 hover:text-slate-700 transition">✕</button>
             </div>
 
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">ชื่อเรื่อง *</label>
-                  <input 
-                    type="text" 
-                    required
-                    value={editingBook.title}
-                    onChange={(e) => setEditingBook({...editingBook, title: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">ชื่อเรื่องรอง</label>
-                  <input 
-                    type="text" 
-                    value={editingBook.subtitle || ''}
-                    onChange={(e) => setEditingBook({...editingBook, subtitle: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">ผู้แต่งหลัก *</label>
-                  <input 
-                    type="text" 
-                    required
-                    value={editingBook.author}
-                    onChange={(e) => setEditingBook({...editingBook, author: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">ผู้แต่งร่วม/ผู้แปล</label>
-                  <input 
-                    type="text" 
-                    value={editingBook.co_authors || ''}
-                    onChange={(e) => setEditingBook({...editingBook, co_authors: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">เลขทะเบียนหนังสือ (Accession Number)</label>
-                  <input 
-                    type="text" 
-                    value={editingBook.accession_no || editingBook.barcode || ''}
-                    onChange={(e) => setEditingBook({...editingBook, accession_no: e.target.value})}
-                    placeholder="เช่น 1, 2, 000001, B0000001"
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">ISBN *</label>
-                  <input 
-                    type="text" 
-                    required
-                    value={editingBook.isbn}
-                    onChange={(e) => setEditingBook({...editingBook, isbn: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">สำนักพิมพ์ *</label>
-                  <input 
-                    type="text" 
-                    required
-                    value={editingBook.publisher}
-                    onChange={(e) => setEditingBook({...editingBook, publisher: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">เลขเรียกหนังสือ (Call Number) *</label>
-                  <input 
-                    type="text" 
-                    required
-                    value={editingBook.call_number}
-                    onChange={(e) => setEditingBook({...editingBook, call_number: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500">สถานะ</label>
-                  <select 
-                    value={editingBook.status}
-                    onChange={(e) => setEditingBook({...editingBook, status: e.target.value as any})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
-                  >
-                    <option value="พร้อมให้บริการ">พร้อมให้บริการ</option>
-                    <option value="ถูกยืมแล้ว">ถูกยืมแล้ว</option>
-                    <option value="ปรับปรุง">ปรับปรุง</option>
-                  </select>
+            <div className="p-6 space-y-6">
+              {/* SECTION 1: ข้อมูลทางบรรณานุกรมหลัก */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2.5 py-1 rounded-md inline-block">📖 ข้อมูลหนังสือหลัก (Primary Metadata)</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ชื่อเรื่องหลัก *</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={editingBook.title || ''}
+                      onChange={(e) => setEditingBook({...editingBook, title: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ชื่อเรื่องรอง (Subtitle)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.subtitle || ''}
+                      onChange={(e) => setEditingBook({...editingBook, subtitle: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ชื่อผู้แต่งหลัก *</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={editingBook.author || ''}
+                      onChange={(e) => setEditingBook({...editingBook, author: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ผู้แต่งร่วม / ผู้รับผิดชอบ</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.co_authors || ''}
+                      onChange={(e) => setEditingBook({...editingBook, co_authors: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">เลขทะเบียนหนังสือ *</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={editingBook.accession_no || ''}
+                      onChange={(e) => setEditingBook({...editingBook, accession_no: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">บาร์โค้ดหนังสือ</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.barcode || ''}
+                      onChange={(e) => setEditingBook({...editingBook, barcode: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1 md:col-span-1">
+                    <label className="text-xs font-bold text-slate-600">รหัส ISBN *</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={editingBook.isbn || ''}
+                      onChange={(e) => setEditingBook({...editingBook, isbn: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-500">ลิงก์ภาพหน้าปก (Cover Image URL)</label>
-                <div className="flex gap-2 items-center">
-                  <input 
-                    type="url" 
-                    placeholder="https://... ลิงก์รูปภาพปกหนังสือ"
-                    value={editingBook.cover_image || ''}
-                    onChange={(e) => setEditingBook({...editingBook, cover_image: e.target.value, illustration: e.target.value, cover_source: 'manual'})}
-                    className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono"
-                  />
-                  {editingBook.cover_image && (
-                    <img src={editingBook.cover_image} alt="Preview" className="h-9 w-7 object-cover rounded border border-slate-200 shrink-0" />
-                  )}
+              {/* SECTION 2: การจัดประเภทและหัวเรื่อง */}
+              <div className="space-y-4 pt-4 border-t border-slate-100">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md inline-block">🏷️ การจัดหมวดหมู่และชั้นหนังสือ (Classification)</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">เลขเรียกหนังสือ (Call Number) *</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={editingBook.call_number || ''}
+                      onChange={(e) => setEditingBook({...editingBook, call_number: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-bold focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">เลขหมู่ทศนิยมดิวอี้ (DDC)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.ddc || ''}
+                      onChange={(e) => setEditingBook({...editingBook, ddc: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">หมวดหมู่จัดเก็บหนังสือ *</label>
+                    <select 
+                      value={editingBook.category || ''}
+                      onChange={(e) => setEditingBook({...editingBook, category: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    >
+                      <option value="">-- เลือกหมวดหมู่ --</option>
+                      {categories.map(c => (
+                        <option key={c.id} value={c.name}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">หัวเรื่องหลัก (Subject)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.subject || ''}
+                      onChange={(e) => setEditingBook({...editingBook, subject: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ชุดหนังสือ (Series)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.series || ''}
+                      onChange={(e) => setEditingBook({...editingBook, series: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ภาษา</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.language || 'ไทย'}
+                      onChange={(e) => setEditingBook({...editingBook, language: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-bold text-slate-500">คำอธิบายย่อ</label>
+              {/* SECTION 3: การจัดพิมพ์และลักษณะรูปเล่ม */}
+              <div className="space-y-4 pt-4 border-t border-slate-100">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md inline-block">🏭 การพิมพ์และลักษณะรูปเล่ม (Publishing)</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">สำนักพิมพ์ *</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={editingBook.publisher || ''}
+                      onChange={(e) => setEditingBook({...editingBook, publisher: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">สถานที่พิมพ์ (Publication Place)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.publication_place || ''}
+                      onChange={(e) => setEditingBook({...editingBook, publication_place: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ปีที่พิมพ์ (Publication Year)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.publication_year || ''}
+                      onChange={(e) => setEditingBook({...editingBook, publication_year: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">พิมพ์ครั้งที่ (Edition)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.edition || 'พิมพ์ครั้งที่ 1'}
+                      onChange={(e) => setEditingBook({...editingBook, edition: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">จำนวนหน้า (Pages)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.pages || ''}
+                      onChange={(e) => setEditingBook({...editingBook, pages: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">รายละเอียดภาพประกอบ</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.illustration || ''}
+                      onChange={(e) => setEditingBook({...editingBook, illustration: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                      placeholder="เช่น มีรูปภาพ, ตาราง, แผนที่"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION 4: ข้อมูลให้บริการและภาพหน้าปก */}
+              <div className="space-y-4 pt-4 border-t border-slate-100">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-rose-700 bg-rose-50 px-2.5 py-1 rounded-md inline-block">⚙️ ข้อมูลให้บริการและสื่อ (Media & Access)</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ผู้แปล (Translator)</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.translator || ''}
+                      onChange={(e) => setEditingBook({...editingBook, translator: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">ราคา</label>
+                    <input 
+                      type="text" 
+                      value={editingBook.price || ''}
+                      onChange={(e) => setEditingBook({...editingBook, price: e.target.value})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-600">สถานะบริการ *</label>
+                    <select 
+                      value={editingBook.status || 'พร้อมให้บริการ'}
+                      onChange={(e) => setEditingBook({...editingBook, status: e.target.value as any})}
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                    >
+                      <option value="พร้อมให้บริการ">พร้อมให้บริการ</option>
+                      <option value="ถูกยืมแล้ว">ถูกยืมแล้ว</option>
+                      <option value="ปรับปรุง">ปรับปรุง / ซ่อมแซม</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1 md:col-span-3">
+                    <label className="text-xs font-bold text-slate-600">ลิงก์รูปภาพหน้าปก URL</label>
+                    <div className="flex gap-2 items-center">
+                      <input 
+                        type="url" 
+                        value={editingBook.cover_image || ''}
+                        onChange={(e) => setEditingBook({...editingBook, cover_image: e.target.value, cover_source: 'manual'})}
+                        className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none"
+                        placeholder="https://... ลิงก์รูปภาพหน้าปกตรง"
+                      />
+                      {editingBook.cover_image && (
+                        <img src={editingBook.cover_image} alt="Cover Preview" className="h-10 w-8 object-contain bg-slate-100 rounded border border-slate-200 shadow-sm shrink-0" />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION 5: เรื่องย่อ / คำอธิบาย */}
+              <div className="space-y-2 pt-4 border-t border-slate-100">
+                <label className="text-xs font-bold text-slate-600">คำอธิบายย่อ / เนื้อเรื่องย่อ</label>
                 <textarea 
                   rows={3}
                   value={editingBook.description || ''}
                   onChange={(e) => setEditingBook({...editingBook, description: e.target.value})}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none"
+                  placeholder="รายละเอียดสังเขปของหนังสือ..."
                 />
               </div>
+            </div>
 
-              <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
-                <button type="button" onClick={() => setEditingBook(null)} className="px-4 py-2 bg-slate-100 text-slate-700 font-bold rounded-lg text-sm">ยกเลิก</button>
-                <button type="submit" className="px-5 py-2 bg-amber-600 text-white font-bold rounded-lg text-sm">บันทึกการแก้ไข</button>
-              </div>
+            <div className="flex justify-end gap-3 px-6 py-4 bg-slate-50 border-t border-slate-100 rounded-b-3xl sticky bottom-0 z-10">
+              <button 
+                type="button" 
+                onClick={() => setEditingBook(null)} 
+                className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 font-bold rounded-xl text-sm border border-slate-200 transition cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button 
+                type="submit" 
+                className="px-6 py-2 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl text-sm transition shadow-md shadow-amber-600/20 cursor-pointer"
+              >
+                บันทึกการแก้ไขทั้งหมด
+              </button>
             </div>
           </form>
         </div>
