@@ -499,10 +499,10 @@ export default function App() {
           const data = await res.json();
           if (data.success) {
             apiSucceeded = true;
-            alert(data.message || '✨ เริ่มต้นระบบค้นหาและดึงภาพหน้าปกจริงของหนังสือทั้งหมดเบื้องหลังสำเร็จเรียบร้อยแล้ว!');
+            // เมื่อดึงภาพหน้าปกจริงจากอินเทอร์เน็ตและบันทึกลงระบบสำเร็จแล้ว ไม่ต้องแสดงแจ้งเตือน
             setTimeout(() => {
               fetchBooks(currentPage);
-            }, 3000);
+            }, 1500);
           }
         }
       } catch (err) {
@@ -586,9 +586,8 @@ export default function App() {
 
         clientAllBooksRef.current = []; // invalidate cache to re-fetch
         fetchBooks(currentPage);
-        if (updated > 0) {
-          alert(`✨ ค้นหาและอัปเดตรูปภาพหน้าปกจากอินเทอร์เน็ตสำเร็จจำนวน ${updated} เล่มเรียบร้อยแล้ว!`);
-        } else {
+        // เมื่อดึงภาพหน้าปกจริงจากอินเทอร์เน็ตและบันทึกลงระบบสำเร็จแล้ว ไม่ต้องแสดงแจ้งเตือน
+        if (updated === 0) {
           alert('ไม่พบรูปภาพหน้าปกใหม่เพิ่มเติมจากอินเทอร์เน็ตสำหรับชุดหนังสือนี้');
         }
       }

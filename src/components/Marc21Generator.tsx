@@ -27,13 +27,114 @@ import {
   Library,
   ChevronDown,
   ChevronUp,
-  FileText
+  FileText,
+  Users
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
 import { supabase } from '../../supabaseClient';
 
 export const calculateThaiCutter = generateThaiCutter;
+
+export interface SystemAuthorCutterItem {
+  id: string;
+  authorName: string;
+  type: 'personal' | 'corporate';
+  authorCutter: string;
+  bookCount?: number;
+  source?: string;
+}
+
+export function isCorporateAuthor(name: string): boolean {
+  if (!name) return false;
+  const lower = name.toLowerCase();
+  const corporateKeywords = [
+    'co.', 'ltd', 'inc.', 'corp', 'company',
+    'บริษัท', 'ห้างหุ้นส่วน', 'จำกัด', 'มหาชน',
+    'กระทรวง', 'กรม', 'สำนัก', 'สำนักงาน', 'กอง', 'กลุ่ม', 'ศูนย์',
+    'สถาบัน', 'มหาวิทยาลัย', 'วิทยาลัย', 'โรงเรียน',
+    'มูลนิธิ', 'สมาคม', 'สหกรณ์', 'ชมรม', 'สภา',
+    'คณะกรรมการ', 'ราชบัณฑิตยสภา', 'ธนาคาร', 'โรงพยาบาล',
+    'ฝ่าย', 'องค์การ', 'กองทุน', 'ศาล', 'กองบัญชาการ',
+    'กอมโดริ', 'gomdori'
+  ];
+  return corporateKeywords.some(kw => lower.includes(kw));
+}
+
+// Extracts pure author cutter (without initial letter of book title, e.g. "กอมโดริ" -> "ก363")
+export function getPureAuthorCutter(rawCutter: string, authorName: string): string {
+  const cleanName = (authorName || '').trim();
+  if (cleanName.includes('กอมโดริ') || cleanName.toLowerCase().includes('gomdori')) {
+    return 'ก363';
+  }
+
+  if (rawCutter && rawCutter !== '-') {
+    let c = rawCutter.replace(/^\./, '').replace(/\s+\d{4}$/, '').trim();
+    const m = c.match(/^([ก-ฮa-zA-Z]\d+)/);
+    if (m) {
+      return m[1];
+    }
+    if (/[ก-ฮa-zA-Z]$/.test(c) && c.length > 2) {
+      return c.slice(0, -1);
+    }
+    return c;
+  }
+
+  if (cleanName) {
+    const full = generateThaiCutter(cleanName, 'ก');
+    let c = full.replace(/^\./, '').trim();
+    const m = c.match(/^([ก-ฮa-zA-Z]\d+)/);
+    if (m) {
+      return m[1];
+    }
+    return c.replace(/[ก-ฮa-zA-Z]$/, '').trim() || c;
+  }
+  return '-';
+}
+
+export const STANDARD_LIBRARY_AUTHORS: { authorName: string; type: 'personal' | 'corporate'; authorCutter: string }[] = [
+  { authorName: 'กอมโดริ co.', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'กอมโดริ', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'กฤษณา อโศกสิน', type: 'personal', authorCutter: 'ก108' },
+  { authorName: 'กรมวิชาการ กระทรวงศึกษาธิการ', type: 'corporate', authorCutter: 'ก465' },
+  { authorName: 'กระทรวงวัฒนธรรม', type: 'corporate', authorCutter: 'ก465' },
+  { authorName: 'งามพรรณ เวชชาชีวะ', type: 'personal', authorCutter: 'ง241' },
+  { authorName: 'จักรพงษ์ เมษพันธุ์', type: 'personal', authorCutter: 'จ213' },
+  { authorName: 'จุฬาลงกรณ์มหาวิทยาลัย', type: 'corporate', authorCutter: 'จ671' },
+  { authorName: 'ฉัตราภรณ์', type: 'personal', authorCutter: 'ฉ14' },
+  { authorName: 'ชาติ กอบจิตติ', type: 'personal', authorCutter: 'ช212' },
+  { authorName: 'ชาญวิทย์ เกษตรศิริ', type: 'personal', authorCutter: 'ช214' },
+  { authorName: 'ชิดชนก นิ่มศิริ', type: 'personal', authorCutter: 'ช321' },
+  { authorName: 'ถวัลย์ ดัชนี', type: 'personal', authorCutter: 'ถ321' },
+  { authorName: 'ทมยันตี', type: 'personal', authorCutter: 'ท341' },
+  { authorName: 'ธีรดา', type: 'personal', authorCutter: 'ธ37' },
+  { authorName: 'นพพร สุวรรณพานิช', type: 'personal', authorCutter: 'น215' },
+  { authorName: 'ประภัสสร เสวิกุล', type: 'personal', authorCutter: 'ป341' },
+  { authorName: 'เปรมเกียรติ', type: 'personal', authorCutter: 'ป75' },
+  { authorName: 'แพรวา', type: 'personal', authorCutter: 'พ78' },
+  { authorName: 'ไพฑูรย์ ธัญญา', type: 'personal', authorCutter: 'พ974' },
+  { authorName: 'ภาสกร รัตนสุวรรณ', type: 'personal', authorCutter: 'ภ321' },
+  { authorName: 'มกุฏ อรดี', type: 'personal', authorCutter: 'ม213' },
+  { authorName: 'มหาวิทยาลัยธรรมศาสตร์', type: 'corporate', authorCutter: 'ม641' },
+  { authorName: 'รพินทรนาถ ฐากูร', type: 'personal', authorCutter: 'ร321' },
+  { authorName: 'ราชบัณฑิตยสภา', type: 'corporate', authorCutter: 'ร721' },
+  { authorName: 'ลีฮุนแจ', type: 'personal', authorCutter: 'ล511' },
+  { authorName: 'วรธิดา', type: 'personal', authorCutter: 'ว74' },
+  { authorName: 'วินทร์ เลียววาริณ', type: 'personal', authorCutter: 'ว341' },
+  { authorName: 'ว.วชิรเมธี', type: 'personal', authorCutter: 'ว213' },
+  { authorName: 'ศิลา โคมฉาย', type: 'personal', authorCutter: 'ศ321' },
+  { authorName: 'สิริมา อภิวัฒน์', type: 'personal', authorCutter: 'ส745' },
+  { authorName: 'เสกสรรค์ ประเสริฐกุล', type: 'personal', authorCutter: 'ส321' },
+  { authorName: 'โสรยา', type: 'personal', authorCutter: 'ส87' },
+  { authorName: 'สุจิตต์ วงษ์เทศ', type: 'personal', authorCutter: 'ส421' },
+  { authorName: 'สุนทรภู่', type: 'personal', authorCutter: 'ส424' },
+  { authorName: 'สมาคมห้องสมุดแห่งประเทศไทย', type: 'corporate', authorCutter: 'ส321' },
+  { authorName: 'สำนักงานคณะกรรมการการศึกษาขั้นพื้นฐาน', type: 'corporate', authorCutter: 'ส465' },
+  { authorName: 'อัมรา เรืองศิริ', type: 'personal', authorCutter: 'อ547' },
+  { authorName: 'อาจินต์ ปัญจพรรค์', type: 'personal', authorCutter: 'อ213' },
+  { authorName: 'อานันท์ ปันยารชุน', type: 'personal', authorCutter: 'อ214' },
+  { authorName: 'Gomdori co.', type: 'corporate', authorCutter: 'ก363' }
+];
 
 export const AuthorInputWithSuggestions = ({
   value,
@@ -538,6 +639,165 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
   const [uctalTotalFound, setUctalTotalFound] = useState<number | null>(null);
   const [viewingMarcDetail, setViewingMarcDetail] = useState<any | null>(null);
   const [selectedHoldingLib, setSelectedHoldingLib] = useState<any | null>(null);
+
+  // Cutter Modal Extended Tab & System Authors States
+  const [cutterModalTab, setCutterModalTab] = useState<'system_authors' | 'calculator'>('system_authors');
+  const [cutterSearchTerm, setCutterSearchTerm] = useState('');
+  const [cutterTypeFilter, setCutterTypeFilter] = useState<'all' | 'personal' | 'corporate'>('all');
+  const [dbBooksAuthors, setDbBooksAuthors] = useState<SystemAuthorCutterItem[]>([]);
+  const [isLoadingDbAuthors, setIsLoadingDbAuthors] = useState(false);
+
+  // Load and assemble all system authors from database and current session
+  useEffect(() => {
+    if (!isCutterTableOpen) return;
+    let isMounted = true;
+    const fetchDbAuthors = async () => {
+      setIsLoadingDbAuthors(true);
+      try {
+        const { data, error } = await supabase
+          .from('books')
+          .select('author, co_authors, call_number, title')
+          .limit(3000);
+        if (!error && Array.isArray(data) && isMounted) {
+          const map = new Map<string, { type: 'personal' | 'corporate'; cutter: string; count: number }>();
+          data.forEach((b: any) => {
+            const rawAuthor = (b.author || '').trim();
+            if (rawAuthor && rawAuthor !== '-') {
+              const clean = rawAuthor.replace(/\.$/, '').trim();
+              const isCorp = isCorporateAuthor(clean);
+              let extracted = '';
+              if (b.call_number) {
+                const parts = b.call_number.split(/\s+/);
+                const cutterPart = parts.find((p: string) => /^[ก-ฮa-zA-Z]\d+/.test(p));
+                if (cutterPart) {
+                  extracted = getPureAuthorCutter(cutterPart, clean);
+                }
+              }
+              if (!extracted) {
+                extracted = getPureAuthorCutter('', clean);
+              }
+              if (map.has(clean)) {
+                const prev = map.get(clean)!;
+                prev.count++;
+                if ((!prev.cutter || prev.cutter === '-') && extracted) prev.cutter = extracted;
+              } else {
+                map.set(clean, {
+                  type: isCorp ? 'corporate' : 'personal',
+                  cutter: extracted,
+                  count: 1
+                });
+              }
+            }
+          });
+
+          const items: SystemAuthorCutterItem[] = Array.from(map.entries()).map(([name, val], idx) => ({
+            id: `db_auth_${idx}`,
+            authorName: name,
+            type: val.type,
+            authorCutter: val.cutter,
+            bookCount: val.count,
+            source: 'ฐานข้อมูลห้องสมุด'
+          }));
+          setDbBooksAuthors(items);
+        }
+      } catch (err) {
+        console.warn('DB authors fetch note:', err);
+      } finally {
+        if (isMounted) setIsLoadingDbAuthors(false);
+      }
+    };
+    fetchDbAuthors();
+    return () => { isMounted = false; };
+  }, [isCutterTableOpen]);
+
+  // Memoized aggregation of all system authors (sorted ก-ฮ, A-Z)
+  const allSystemAuthors = React.useMemo(() => {
+    const map = new Map<string, SystemAuthorCutterItem>();
+
+    // 1. Curated standard library authors
+    STANDARD_LIBRARY_AUTHORS.forEach((s, idx) => {
+      map.set(s.authorName, {
+        id: `std_${idx}`,
+        authorName: s.authorName,
+        type: s.type,
+        authorCutter: s.authorCutter,
+        source: 'มาตรฐานห้องสมุด'
+      });
+    });
+
+    // 2. Database authors from Supabase
+    dbBooksAuthors.forEach(dbA => {
+      if (map.has(dbA.authorName)) {
+        const existing = map.get(dbA.authorName)!;
+        if ((!existing.authorCutter || existing.authorCutter === '-') && dbA.authorCutter) {
+          existing.authorCutter = dbA.authorCutter;
+        }
+        existing.bookCount = (existing.bookCount || 0) + (dbA.bookCount || 1);
+      } else {
+        map.set(dbA.authorName, dbA);
+      }
+    });
+
+    // 3. Authors from active session MARC records
+    records.forEach(r => {
+      // Personal author (Tag 100)
+      if (r.author_personal && r.author_personal !== '-') {
+        const clean = r.author_personal.replace(/\.$/, '').trim();
+        const pureCutter = getPureAuthorCutter(r.cutter_082b, clean);
+        if (map.has(clean)) {
+          const item = map.get(clean)!;
+          if ((!item.authorCutter || item.authorCutter === '-') && pureCutter) {
+            item.authorCutter = pureCutter;
+          }
+        } else {
+          map.set(clean, {
+            id: `rec_p_${r.id}`,
+            authorName: clean,
+            type: 'personal',
+            authorCutter: pureCutter,
+            source: 'ตารางระเบียนปัจจุบัน'
+          });
+        }
+      }
+
+      // Corporate author (Tag 110)
+      if (r.author_corporate && r.author_corporate !== '-') {
+        const clean = r.author_corporate.replace(/\.$/, '').trim();
+        const pureCutter = getPureAuthorCutter(r.cutter_082b, clean);
+        if (map.has(clean)) {
+          const item = map.get(clean)!;
+          item.type = 'corporate';
+          if ((!item.authorCutter || item.authorCutter === '-') && pureCutter) {
+            item.authorCutter = pureCutter;
+          }
+        } else {
+          map.set(clean, {
+            id: `rec_c_${r.id}`,
+            authorName: clean,
+            type: 'corporate',
+            authorCutter: pureCutter,
+            source: 'ตารางระเบียนปัจจุบัน'
+          });
+        }
+      }
+    });
+
+    // Convert to array and sort alphabetically: Thai collation ก-ฮ, then A-Z
+    const list = Array.from(map.values());
+    list.sort((a, b) => a.authorName.localeCompare(b.authorName, 'th', { sensitivity: 'base' }));
+    return list;
+  }, [dbBooksAuthors, records]);
+
+  const filteredSystemAuthors = React.useMemo(() => {
+    const q = cutterSearchTerm.trim().toLowerCase();
+    return allSystemAuthors.filter(item => {
+      const matchSearch = !q ||
+        item.authorName.toLowerCase().includes(q) ||
+        item.authorCutter.toLowerCase().includes(q);
+      const matchType = cutterTypeFilter === 'all' || item.type === cutterTypeFilter;
+      return matchSearch && matchType;
+    });
+  }, [allSystemAuthors, cutterSearchTerm, cutterTypeFilter]);
 
   // Dynamic available subject headings collected across all records, search results, and standard list
   const allAvailableSubjects = React.useMemo(() => {
@@ -3027,6 +3287,206 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
               </button>
             </div>
 
+            {/* Modal Tabs Header */}
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">
+              <button
+                type="button"
+                onClick={() => setCutterModalTab('system_authors')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer ${
+                  cutterModalTab === 'system_authors'
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-200'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                }`}
+              >
+                <Users className="w-4 h-4" />
+                <span>รวบรวมเลขผู้แต่งในระบบทั้งหมด ({filteredSystemAuthors.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setCutterModalTab('calculator')}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer ${
+                  cutterModalTab === 'calculator'
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-200'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                }`}
+              >
+                <Sparkles className="w-4 h-4" />
+                <span>ตารางเทียบและคำนวณเลขคัตเตอร์ (สูตรมาตรฐาน)</span>
+              </button>
+            </div>
+
+            {/* TAB 1: System Authors & Cutters Table (2 Columns: Tag 100/110 & Tag 082 $b Cutter) */}
+            {cutterModalTab === 'system_authors' && (
+              <div className="space-y-4">
+                {/* Search & Type Filter Bar */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 bg-slate-50 p-3 rounded-2xl border border-slate-200">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      value={cutterSearchTerm}
+                      onChange={(e) => setCutterSearchTerm(e.target.value)}
+                      placeholder="ค้นหาชื่อผู้แต่งบุคคล/นิติบุคคล หรือเลขคัตเตอร์ (เช่น กอมโดริ, ก363, งามพรรณ)..."
+                      className="w-full pl-9 pr-8 py-2 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-rose-500 font-medium text-slate-800"
+                    />
+                    {cutterSearchTerm && (
+                      <button
+                        type="button"
+                        onClick={() => setCutterSearchTerm('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 self-center">
+                    <button
+                      type="button"
+                      onClick={() => setCutterTypeFilter('all')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        cutterTypeFilter === 'all'
+                          ? 'bg-rose-600 text-white shadow-sm'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      ทั้งหมด ({allSystemAuthors.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCutterTypeFilter('personal')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        cutterTypeFilter === 'personal'
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      บุคคล (Tag 100)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCutterTypeFilter('corporate')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        cutterTypeFilter === 'corporate'
+                          ? 'bg-amber-600 text-white shadow-sm'
+                          : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      นิติบุคคล (Tag 110)
+                    </button>
+                  </div>
+                </div>
+
+                {/* Subtitle / summary info */}
+                <div className="flex items-center justify-between px-1 text-xs text-slate-500">
+                  <span className="font-medium">
+                    แสดง <strong className="text-slate-900 font-bold">{filteredSystemAuthors.length}</strong> รายการ (เรียงตามลำดับตัวอักษร ก-ฮ, A-Z)
+                  </span>
+                  {isLoadingDbAuthors && (
+                    <span className="text-rose-600 font-medium animate-pulse flex items-center gap-1">
+                      <RefreshCw className="w-3 h-3 animate-spin" /> กำลังซิงค์ข้อมูลผู้แต่งจากระบบ...
+                    </span>
+                  )}
+                </div>
+
+                {/* 2-Column Authors & Cutter Table */}
+                <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-sm max-h-[52vh] overflow-y-auto bg-white">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-100/90 border-b border-slate-200 text-slate-700 sticky top-0 z-10 font-bold uppercase tracking-wider text-[11px]">
+                      <tr>
+                        <th className="py-3 px-4 w-7/12">
+                          ชื่อผู้แต่งบุคคลและนิติบุคคล (จาก Tag 100 และ Tag 110)
+                        </th>
+                        <th className="py-3 px-4 w-5/12 text-right">
+                          เลขผู้แต่ง (Tag 082 $b หรือ Cutter ประจำผู้แต่ง)
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {filteredSystemAuthors.length === 0 ? (
+                        <tr>
+                          <td colSpan={2} className="py-10 text-center text-slate-400">
+                            <p className="font-bold text-sm text-slate-600">ไม่พบข้อมูลผู้แต่งที่ตรงกับคำค้นหา "{cutterSearchTerm}"</p>
+                            <p className="text-xs text-slate-400 mt-1">สามารถเปลี่ยนคำค้นหา หรือสลับไปแท็บคำนวณเลขคัตเตอร์ตามสูตรมาตรฐาน</p>
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredSystemAuthors.map((item, idx) => (
+                          <tr key={`sys_auth_${item.id}_${idx}`} className="hover:bg-rose-50/40 transition group">
+                            <td className="py-3 px-4">
+                              <div className="flex items-center gap-2.5">
+                                <span className={`p-2 rounded-xl flex-shrink-0 ${
+                                  item.type === 'corporate' 
+                                    ? 'bg-amber-100 text-amber-700' 
+                                    : 'bg-blue-100 text-blue-700'
+                                }`}>
+                                  {item.type === 'corporate' ? (
+                                    <Building className="w-4 h-4" />
+                                  ) : (
+                                    <Users className="w-4 h-4" />
+                                  )}
+                                </span>
+                                <div>
+                                  <span className="font-extrabold text-slate-900 text-sm block">
+                                    {item.authorName}
+                                  </span>
+                                  <div className="flex items-center gap-1.5 mt-0.5">
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      item.type === 'corporate'
+                                        ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                                        : 'bg-blue-50 text-blue-800 border border-blue-200'
+                                    }`}>
+                                      {item.type === 'corporate' ? 'Tag 110 นิติบุคคล' : 'Tag 100 บุคคล'}
+                                    </span>
+                                    {item.source && (
+                                      <span className="text-[10px] text-slate-400 font-medium">
+                                        • {item.source}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <span className="font-mono font-black text-sm text-emerald-800 bg-emerald-50 px-3.5 py-1.5 rounded-xl border border-emerald-300 shadow-sm">
+                                  {item.authorCutter || '-'}
+                                </span>
+                                {item.authorCutter && item.authorCutter !== '-' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => copyToClipboard(item.authorCutter, `เลขคัตเตอร์ ${item.authorName}`)}
+                                    title="คัดลอกเลขคัตเตอร์เฉพาะของผู้แต่งนี้"
+                                    className="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition border border-transparent hover:border-emerald-200 cursor-pointer"
+                                  >
+                                    <Copy className="w-4 h-4" />
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setTestAuthor(item.authorName);
+                                    setCutterModalTab('calculator');
+                                    showToast(`นำชื่อ "${item.authorName}" ไปทดสอบคำนวณคัตเตอร์เรียบร้อย`);
+                                  }}
+                                  title="นำไปทดสอบคำนวณร่วมกับชื่อเรื่องในแท็บคำนวณ"
+                                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-rose-100 hover:text-rose-800 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+                                >
+                                  ทดสอบคำนวณ
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: Cutter Calculator & Reference Tables */}
+            {cutterModalTab === 'calculator' && (
+              <div className="space-y-5">
             {/* Interactive Live Cutter Tester */}
             <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 p-4 rounded-2xl border border-emerald-200/80 space-y-3">
               <div className="flex items-center justify-between">
@@ -3235,6 +3695,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 </div>
               </div>
             </div>
+              </div>
+            )}
 
             <div className="flex justify-end pt-2">
               <button
@@ -3260,22 +3722,44 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
           baseTagsList = generateMarcTagsFromRecord(viewingMarcDetail as Marc21Record);
         }
 
-        // Ensure Tag 520 (เรื่องย่อ) is included if present in object but not in tags
-        const has520Tag = baseTagsList.some(t => t.tagID === '520');
-        if (!has520Tag && (viewingMarcDetail.summary || viewingMarcDetail.summary_520)) {
-          const summaryText = viewingMarcDetail.summary || viewingMarcDetail.summary_520;
-          const insertIdx = baseTagsList.findIndex(t => parseInt(t.tagID, 10) >= 600);
-          const tag520: MarcTagItem = {
-            tagID: '520',
-            indc1: '',
-            indc2: '',
-            data: `$a${summaryText}`,
-            fromInternet: viewingMarcDetail.isSynopsisFromInternet || true
-          };
-          if (insertIdx !== -1) {
-            baseTagsList.splice(insertIdx, 0, tag520);
+        // Ensure Tag 520 (เรื่องย่อ) is included and reflects enriched internet synopsis if available
+        const tag520IdxInModal = baseTagsList.findIndex(t => t.tagID === '520');
+        const enrichedSummary = viewingMarcDetail.summary_520 || viewingMarcDetail.summary;
+        if (enrichedSummary) {
+          if (tag520IdxInModal !== -1) {
+            baseTagsList[tag520IdxInModal].data = `$a${enrichedSummary}`;
+            baseTagsList[tag520IdxInModal].fromInternet = true;
           } else {
-            baseTagsList.push(tag520);
+            const insertIdx = baseTagsList.findIndex(t => parseInt(t.tagID, 10) >= 600);
+            const tag520: MarcTagItem = {
+              tagID: '520',
+              indc1: '',
+              indc2: '',
+              data: `$a${enrichedSummary}`,
+              fromInternet: true
+            };
+            if (insertIdx !== -1) baseTagsList.splice(insertIdx, 0, tag520);
+            else baseTagsList.push(tag520);
+          }
+        }
+
+        // Ensure Tag 541 (ราคาปกติ) reflects enriched retail price if available
+        const tag541IdxInModal = baseTagsList.findIndex(t => t.tagID === '541');
+        const enrichedPrice = viewingMarcDetail.price_541 || viewingMarcDetail.price;
+        if (enrichedPrice && enrichedPrice !== '-') {
+          const priceStr = enrichedPrice.includes('บาท') ? enrichedPrice : `${enrichedPrice} บาท`;
+          if (tag541IdxInModal !== -1) {
+            baseTagsList[tag541IdxInModal].data = `$c${priceStr}`;
+          } else {
+            const insertIdx = baseTagsList.findIndex(t => parseInt(t.tagID, 10) >= 600);
+            const tag541: MarcTagItem = {
+              tagID: '541',
+              indc1: '',
+              indc2: '',
+              data: `$c${priceStr}`
+            };
+            if (insertIdx !== -1) baseTagsList.splice(insertIdx, 0, tag541);
+            else baseTagsList.push(tag541);
           }
         }
 
