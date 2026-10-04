@@ -294,84 +294,109 @@ export const formatAddedEntry700 = (val: string): string => {
 export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): string => {
   if (!rawResp && !authorPersonal) return 'ไม่ระบุผู้แต่ง.';
 
-  let text = rawResp || authorPersonal || '';
+  let text = (rawResp || authorPersonal || '').trim();
 
-  // 1. Strip translator clauses completely from 245 $c (author only!)
-  text = text
-    .replace(/;\s*[^;]*?(?:แปล|ผู้แปล|แปลโดย|เรื่องและภาพ|ภาพประกอบ|วาดภาพ)[^;]*$/gi, '')
-    .replace(/\/\s*[^/]*?(?:แปล|ผู้แปล|แปลโดย)[^/]*$/gi, '')
-    .replace(/,\s*[^,]*?(?:แปล|ผู้แปล|แปลโดย)[^,]*$/gi, '')
-    .trim();
-
-  // Clean trailing slashes, semicolons, colons
-  text = text.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
-
-  if (!text && authorPersonal) {
-    text = authorPersonal.replace(/\.$/, '').trim();
+  // If text already has [และคนอื่นๆ ...], preserve author + brackets cleanly
+  const existingOthersMatch = text.match(/^(.+?)\s*(\[และคนอื่นๆ(?:\s*\(?[0-9]+\)?\s*คน)?\]\.?)$/i);
+  if (existingOthersMatch) {
+    let mainA = existingOthersMatch[1].replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：]?\s*/i, '');
+    mainA = mainA.replace(/\s*[:：]?\s*(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    mainA = mainA.replace(/[\s\/:;=,.]+$/, '').trim();
+    return `${mainA} ${existingOthersMatch[2].endsWith('.') ? existingOthersMatch[2] : existingOthersMatch[2] + '.'}`;
   }
 
-  // 2. Parse authors
-  let rawAuthors: string[] = [];
+  // Split by top-level delimiters (semicolon, slash)
+  let segments: string[] = [];
   if (text.includes(';')) {
-    rawAuthors = text.split(';').map(a => a.trim()).filter(Boolean);
+    segments = text.split(';').map(s => s.trim()).filter(Boolean);
   } else if (text.includes('/')) {
-    rawAuthors = text.split('/').map(a => a.trim()).filter(Boolean);
-  } else if (text.includes(' และ ')) {
-    const parts = text.split(' และ ').map(a => a.trim()).filter(Boolean);
-    if (parts.length > 1) {
-      const firsts = parts[0].split(',').map(a => a.trim()).filter(Boolean);
-      rawAuthors = [...firsts, parts[1]];
-    } else {
-      rawAuthors = parts;
-    }
+    segments = text.split('/').map(s => s.trim()).filter(Boolean);
   } else {
-    // If separated by commas
-    const parts = text.split(',').map(a => a.trim()).filter(Boolean);
-    if (parts.length === 2 && !/[ก-ฮ]/.test(parts[0]) && !/[ก-ฮ]/.test(parts[1]) && parts[1].length <= 15) {
-      rawAuthors = [`${parts[0]}, ${parts[1]}`];
-    } else if (parts.length > 1) {
-      rawAuthors = parts;
-    } else {
-      rawAuthors = [text];
+    segments = [text];
+  }
+
+  // Filter out segments that are translator / illustrator / photographer / editor etc.
+  const authorSegments: string[] = [];
+  for (const seg of segments) {
+    const isExplicitNonAuthor = (
+      /[:：]\s*(?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|illustrat|translated|translator|editor|บก\.|บรรณาธิการ)/i.test(seg) ||
+      /^(?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|ภาพถ่าย|รูปภาพ|illustrated|illustrations|illustration|illustrator|illus\.|translated|translator|trans\.|editor|บก\.|บรรณาธิการ)\s*[:：]/i.test(seg) ||
+      /\((?:แปล|ผู้แปล|ภาพประกอบ|ภาพ|ผู้วาด|วาดภาพ|illustrator|translator|editor)\)/i.test(seg) ||
+      /(?:แปลโดย|ผู้แปล|ภาพประกอบโดย|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพโดย|วาดภาพโดย|illustrated by|translated by)/i.test(seg) ||
+      /,\s*(?:แปล|ผู้แปล|ภาพประกอบ|ภาพ|ผู้วาด|วาดภาพ|illustrator|translator)\s*$/i.test(seg)
+    );
+
+    if (!isExplicitNonAuthor) {
+      authorSegments.push(seg);
     }
   }
 
-  // Clean each author name
-  const cleanAuthors = rawAuthors.map(a => {
-    return a
-      .replace(/\s*(?:แต่ง|ผู้แต่ง|เขียน|ผู้เขียน|เรื่อง|ผู้เรียบเรียง|เรียบเรียง|\.)$/i, '')
-      .replace(/[\s\/:;=,]+$/, '')
-      .replace(/^[\s\/:;=,]+/, '')
-      .trim();
+  if (authorSegments.length === 0) {
+    if (authorPersonal) {
+      const cleanA = authorPersonal.replace(/\.+$/, '').trim();
+      return `${cleanA}.`;
+    }
+    return 'ไม่ระบุผู้แต่ง.';
+  }
+
+  // Combine remaining author segments and parse individual author names
+  let parsedAuthors: string[] = [];
+  for (let seg of authorSegments) {
+    seg = seg.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：]?\s*/i, '');
+    seg = seg.replace(/\s*[:：]?\s*(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    seg = seg.replace(/\((?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียน|แต่ง)\)/i, '');
+    seg = seg.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
+
+    if (!seg) continue;
+
+    if (seg.includes(' และ ') || seg.includes(' และ')) {
+      const parts = seg.split(/\s*และ\s*/).map(a => a.trim()).filter(Boolean);
+      if (parts.length > 1) {
+        const firsts = parts[0].split(',').map(a => a.trim()).filter(Boolean);
+        parsedAuthors.push(...firsts, ...parts.slice(1));
+      } else {
+        parsedAuthors.push(seg);
+      }
+    } else if (seg.includes(',')) {
+      const parts = seg.split(',').map(a => a.trim()).filter(Boolean);
+      if (parts.length === 2 && !/[ก-ฮ]/.test(parts[0]) && !/[ก-ฮ]/.test(parts[1]) && parts[1].length <= 15) {
+        parsedAuthors.push(`${parts[0]}, ${parts[1]}`);
+      } else {
+        parsedAuthors.push(...parts);
+      }
+    } else {
+      parsedAuthors.push(seg);
+    }
+  }
+
+  const cleanAuthors = parsedAuthors.map(a => {
+    let cl = a.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：]?\s*/i, '');
+    cl = cl.replace(/\s*[:：]?\s*(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    cl = cl.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
+    cl = cl.replace(/\.+$/, '').trim();
+    return cl;
   }).filter(Boolean);
 
   if (cleanAuthors.length === 0) {
     if (authorPersonal) {
-      const cleanA = authorPersonal.replace(/\.$/, '').trim();
-      return cleanA.endsWith('.') ? cleanA : `${cleanA}.`;
+      const cleanA = authorPersonal.replace(/\.+$/, '').trim();
+      return `${cleanA}.`;
     }
     return 'ไม่ระบุผู้แต่ง.';
   }
 
   const N = cleanAuthors.length;
-
   if (N === 1) {
     const a = cleanAuthors[0];
-    return a.endsWith('.') ? a : `${a}.`;
+    return `${a}.`;
   }
-
   if (N === 2) {
-    return `${cleanAuthors[0]} และ ${cleanAuthors[1]}.`;
+    return `${cleanAuthors[0]} และ${cleanAuthors[1]}.`;
   }
-
   if (N === 3) {
-    return `${cleanAuthors[0]}, ${cleanAuthors[1]} และ ${cleanAuthors[2]}.`;
+    return `${cleanAuthors[0]}, ${cleanAuthors[1]} และ${cleanAuthors[2]}.`;
   }
-
-  // N >= 4: ลงชื่อผู้แต่งคนแรก และตามด้วย [และคนอื่นๆ (จำนวน) คน]
-  const firstAuthor = cleanAuthors[0];
-  const others = N - 1;
-  return `${firstAuthor} [และคนอื่นๆ ${others} คน].`;
+  return `${cleanAuthors[0]} [และคนอื่นๆ ${N - 1} คน].`;
 };
 
 export const formatMarc246Subfields = (val: string): string => {
@@ -805,13 +830,13 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
     
     // 1. Collect from current table records
     records.forEach(r => {
-      if (r.subject_650a && r.subject_650a !== '-') set.add(r.subject_650a.trim());
-      if (r.subject_650_2 && r.subject_650_2 !== '-') set.add(r.subject_650_2.trim());
+      if (r.subject_650a && r.subject_650a !== '-' && r.subject_650a !== 'ทั่วไป') set.add(r.subject_650a.trim());
+      if (r.subject_650_2 && r.subject_650_2 !== '-' && r.subject_650_2 !== 'ทั่วไป') set.add(r.subject_650_2.trim());
       if (Array.isArray(r.marc_tags)) {
         r.marc_tags.forEach((tag: any) => {
           if (tag.tagID === '650' || tag.tag === '650') {
             const parsed = parseMarcSubfield(tag.data || '', 'a') || tag.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
-            if (parsed && parsed !== '-') set.add(parsed);
+            if (parsed && parsed !== '-' && parsed !== 'ทั่วไป') set.add(parsed.replace(/[\.\,\:\/]+$/, '').trim());
           }
         });
       }
@@ -819,24 +844,26 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
 
     // 2. Collect from searched results (UC-TAL / Live search)
     uctalResults.forEach(item => {
-      if (item.subject && item.subject !== '-') set.add(item.subject.trim());
-      if (item.subject_650a && item.subject_650a !== '-') set.add(item.subject_650a.trim());
+      if (item.subject && item.subject !== '-' && item.subject !== 'ทั่วไป') set.add(item.subject.trim());
+      if (item.subject_650a && item.subject_650a !== '-' && item.subject_650a !== 'ทั่วไป') set.add(item.subject_650a.trim());
       if (Array.isArray(item.all650Subjects)) {
         item.all650Subjects.forEach((s: string) => {
-          if (s && s !== '-') set.add(s.trim());
+          if (s && s !== '-' && s !== 'ทั่วไป') set.add(s.trim());
         });
       }
       if (Array.isArray(item.marcRaw)) {
         item.marcRaw.forEach((tag: any) => {
           if (tag.tagID === '650' || tag.tag === '650') {
             const parsed = parseMarcSubfield(tag.data || '', 'a') || tag.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
-            if (parsed && parsed !== '-') set.add(parsed);
+            if (parsed && parsed !== '-' && parsed !== 'ทั่วไป') set.add(parsed.replace(/[\.\,\:\/]+$/, '').trim());
           }
         });
       }
     });
 
-    return Array.from(set).filter(Boolean);
+    const list = Array.from(set).filter(Boolean);
+    list.sort((a, b) => a.localeCompare(b, 'th', { sensitivity: 'base' }));
+    return list;
   }, [records, uctalResults]);
 
   // Dynamic available storage locations collected across all records + standard list
@@ -2562,38 +2589,32 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                                 .filter((s): s is string => Boolean(s && s !== '-'))
                             : [];
 
-                          const options = Array.from(new Set([
+                          const rowSpecificSubjects = Array.from(new Set([
                             ...thisRow650s,
                             r.subject_650a,
                             r.subject_650_2
                           ].filter((s): s is string => Boolean(s && s !== '-'))));
 
-                          if (options.length === 0) {
-                            options.push(r.subject_650a || 'ทั่วไป');
+                          if (rowSpecificSubjects.length === 0) {
+                            rowSpecificSubjects.push(r.subject_650a || 'ทั่วไป');
                           }
 
-                          if (options.length > 1) {
-                            return (
-                              <div className="relative">
-                                <select
-                                  value={r.subject_650a || options[0]}
-                                  onChange={(e) => handleSubjectChange(r.id, e.target.value)}
-                                  title={`เลือกหัวเรื่องจาก MARC Tag 650 ของเล่มนี้ (${options.length} หัวเรื่อง)`}
-                                  className="w-full bg-emerald-50/70 hover:bg-white focus:bg-white border border-emerald-300 hover:border-emerald-500 focus:border-emerald-500 rounded-lg px-2 py-1.5 text-xs text-emerald-900 font-medium cursor-pointer transition focus:outline-none focus:ring-1 focus:ring-emerald-500 truncate shadow-sm"
-                                >
-                                  {options.map((s, sIdx) => (
-                                    <option key={`marc650_${r.id}_${sIdx}`} value={s}>
-                                      🏷️ {s}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                            );
-                          }
+                          const currentVal = r.subject_650a || rowSpecificSubjects[0];
 
                           return (
-                            <div className="px-2 py-1 text-xs text-slate-800 font-medium truncate" title={options[0]}>
-                              {options[0]}
+                            <div className="relative">
+                              <select
+                                value={currentVal}
+                                onChange={(e) => handleSubjectChange(r.id, e.target.value)}
+                                title={`หัวเรื่องตรงของเล่มนี้ (Tag 650): ${currentVal}`}
+                                className="w-full bg-emerald-50/80 hover:bg-white focus:bg-white border border-emerald-300 hover:border-emerald-500 focus:border-emerald-500 rounded-lg px-2 py-1.5 text-xs text-emerald-950 font-medium cursor-pointer transition focus:outline-none focus:ring-2 focus:ring-emerald-500/20 truncate shadow-2xs"
+                              >
+                                {rowSpecificSubjects.map((s, sIdx) => (
+                                  <option key={`row650_${r.id}_${sIdx}`} value={s}>
+                                    🏷️ {s}
+                                  </option>
+                                ))}
+                              </select>
                             </div>
                           );
                         })()}
@@ -2853,7 +2874,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
               </div>
 
               <div className="sm:col-span-2">
-                <label className="block font-semibold text-slate-700 mb-1">245 $c ส่วนแจ้งความรับผิดชอบ (ชื่อผู้แต่งอย่างเดียว ไม่ใส่ผู้แปล)</label>
+                <label className="block font-semibold text-slate-700 mb-1">245 $c ส่วนแจ้งความรับผิดชอบ (ชื่อผู้แต่งอย่างเดียว ไม่ใส่ชื่อผู้วาดภาพประกอบ และชื่อผู้แปล)</label>
                 <input
                   type="text"
                   value={editingRecord.responsibility_245c || ''}
@@ -3070,6 +3091,11 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                         placeholder="ระบุหรือแก้ไขหัวเรื่อง..."
                         className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
                       />
+                      <datalist id="subject-headings-list">
+                        {allAvailableSubjects.map((s, idx) => (
+                          <option key={`dl_subj_${idx}`} value={s} />
+                        ))}
+                      </datalist>
                     </div>
                   );
                 })()}
