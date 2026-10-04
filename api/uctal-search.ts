@@ -98,6 +98,7 @@ function parseMarcSubfield(dataStr: string, code: string): string {
 
 // In-memory cache for book synopses and prices to prevent re-querying
 const internetBookCache = new Map<string, { synopsis: string; price: string }>();
+let rateLimitedUntil = 0;
 
 // Fetch high-accuracy book synopsis and official retail price from the Internet (SE-ED, Naiin, Google)
 async function fetchInternetBookMetadata(title: string, author: string, isbn: string, series = ''): Promise<{ synopsis: string; price: string }> {
@@ -120,7 +121,9 @@ async function fetchInternetBookMetadata(title: string, author: string, isbn: st
   }
 
   const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
-  if (apiKey) {
+  const isRateLimited = Date.now() < rateLimitedUntil;
+
+  if (apiKey && !isRateLimited) {
     try {
       const ai = new GoogleGenAI({
         apiKey,
@@ -144,7 +147,7 @@ ISBN: "${cleanIsbn || isbn}"
 }`;
 
       const aiRes = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash',
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }]
@@ -173,12 +176,15 @@ ISBN: "${cleanIsbn || isbn}"
           } catch {}
         }
       }
-    } catch (aiErr) {
-      console.warn('Google Search Grounding fetchInternetBookMetadata notice:', aiErr);
+    } catch (aiErr: any) {
+      const errStr = String(aiErr?.message || aiErr || '');
+      if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED')) {
+        rateLimitedUntil = Date.now() + 60000; // Circuit break for 1 minute
+      }
     }
   }
 
-  // Fallback if network or AI search fails
+  // Fallback if network, AI search, or quota fails
   let fallbackPrice = '165 บาท';
   if (cleanIsbn.length >= 10) {
     try {
@@ -198,6 +204,7 @@ ISBN: "${cleanIsbn || isbn}"
     synopsis: `หนังสือ "${cleanTitle}" นำเสนอเนื้อหาสาระและสารประโยชน์ที่น่าสนใจ เหมาะสำหรับผู้อ่านและผู้ศึกษาค้นคว้า`,
     price: fallbackPrice
   };
+  if (cacheKey) internetBookCache.set(cacheKey, fallbackObj);
   return fallbackObj;
 }
 

@@ -480,85 +480,117 @@ export function formatAddedEntry700(val: string): string {
 export function formatAuthorList245c(rawResp: string, authorPersonal?: string): string {
   if (!rawResp && !authorPersonal) return 'ไม่ระบุผู้แต่ง.';
 
-  let text = rawResp || authorPersonal || '';
+  let text = (rawResp || authorPersonal || '').trim();
 
-  // 1. Strip translator clauses completely from 245 $c (author only!)
-  text = text
-    .replace(/;\s*[^;]*?(?:แปล|ผู้แปล|แปลโดย|เรื่องและภาพ|ภาพประกอบ|วาดภาพ)[^;]*$/gi, '')
-    .replace(/\/\s*[^/]*?(?:แปล|ผู้แปล|แปลโดย)[^/]*$/gi, '')
-    .replace(/,\s*[^,]*?(?:แปล|ผู้แปล|แปลโดย)[^,]*$/gi, '')
-    .trim();
-
-  // Clean trailing slashes, semicolons, colons
-  text = text.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
-
-  if (!text && authorPersonal) {
-    text = authorPersonal.replace(/\.$/, '').trim();
+  // If text already has [และคนอื่นๆ ...], preserve author + brackets cleanly
+  const existingOthersMatch = text.match(/^(.+?)\s*(\[และคนอื่นๆ(?:\s*\(?[0-9]+\)?\s*คน)?\]\.?)$/i);
+  if (existingOthersMatch) {
+    let mainA = existingOthersMatch[1].replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：,]?\s*/i, '');
+    mainA = mainA.replace(/[\s\/:;=,]+(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    mainA = mainA.replace(/[\s\/:;=,.]+$/, '').trim();
+    return `${mainA} ${existingOthersMatch[2].endsWith('.') ? existingOthersMatch[2] : existingOthersMatch[2] + '.'}`;
   }
 
-  // 2. Parse authors
-  let rawAuthors: string[] = [];
+  // Split by top-level delimiters (semicolon, slash)
+  let segments: string[] = [];
   if (text.includes(';')) {
-    rawAuthors = text.split(';').map(a => a.trim()).filter(Boolean);
+    segments = text.split(';').map(s => s.trim()).filter(Boolean);
   } else if (text.includes('/')) {
-    rawAuthors = text.split('/').map(a => a.trim()).filter(Boolean);
-  } else if (text.includes(' และ ')) {
-    const parts = text.split(' และ ').map(a => a.trim()).filter(Boolean);
-    if (parts.length > 1) {
-      const firsts = parts[0].split(',').map(a => a.trim()).filter(Boolean);
-      rawAuthors = [...firsts, parts[1]];
-    } else {
-      rawAuthors = parts;
-    }
+    segments = text.split('/').map(s => s.trim()).filter(Boolean);
   } else {
-    // If separated by commas
-    const parts = text.split(',').map(a => a.trim()).filter(Boolean);
-    if (parts.length === 2 && !/[ก-ฮ]/.test(parts[0]) && !/[ก-ฮ]/.test(parts[1]) && parts[1].length <= 15) {
-      rawAuthors = [`${parts[0]}, ${parts[1]}`];
-    } else if (parts.length > 1) {
-      rawAuthors = parts;
-    } else {
-      rawAuthors = [text];
+    segments = [text];
+  }
+
+  // Filter out segments that are translator / illustrator / photographer / editor etc.
+  const authorSegments: string[] = [];
+  for (const seg of segments) {
+    const isExplicitNonAuthor = (
+      // Keyword with space, colon, or comma at the end of the segment: e.g. "Kang Gyung-Hyo ภาพประกอบ", "กัญญารัตน์ จิราสวัสดิ์ แปล.", "John Doe, illus."
+      /[\s:：,](?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|ภาพถ่าย|รูปภาพ|illustrat|illustrated|illustrations|illustration|illustrator|illus\.|translator|translated|trans\.|translation|editor|ed\.|edition|บก\.|บรรณาธิการ)\s*[\.]?$/i.test(seg) ||
+      // Keyword at the beginning of segment: e.g. "ภาพประกอบ : Kang Gyung-Hyo", "แปลโดย ภาสกร", "ภาพโดย..."
+      /^(?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|ภาพถ่าย|รูปภาพ|illustrated|illustrations|illustration|illustrator|illus\.|translated|translator|trans\.|editor|บก\.|บรรณาธิการ)\s*[:：,\s]/i.test(seg) ||
+      // Parenthetical keywords: e.g. "(ภาพประกอบ)", "(แปล)", "(ผู้แปล)", "(illustrator)"
+      /\((?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพ|ผู้วาด|ผู้วาดภาพ|วาดภาพ|illustrator|illus\.|translator|trans\.|editor|ed\.)\)/i.test(seg) ||
+      // Mid-segment keywords
+      /(?:แปลโดย|ผู้แปล|ภาพประกอบโดย|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพโดย|วาดภาพโดย|illustrated by|translated by)/i.test(seg)
+    );
+
+    if (!isExplicitNonAuthor) {
+      authorSegments.push(seg);
     }
   }
 
-  // Clean each author name
-  const cleanAuthors = rawAuthors.map(a => {
-    return a
-      .replace(/\s*(?:แต่ง|ผู้แต่ง|เขียน|ผู้เขียน|เรื่อง|ผู้เรียบเรียง|เรียบเรียง|\.)$/i, '')
-      .replace(/[\s\/:;=,]+$/, '')
-      .replace(/^[\s\/:;=,]+/, '')
-      .trim();
+  if (authorSegments.length === 0) {
+    if (authorPersonal) {
+      const cleanA = authorPersonal.replace(/\.+$/, '').trim();
+      return `${cleanA}.`;
+    }
+    return 'ไม่ระบุผู้แต่ง.';
+  }
+
+  // Combine remaining author segments and parse individual author names
+  let parsedAuthors: string[] = [];
+  for (let seg of authorSegments) {
+    seg = seg.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：,]?\s*/i, '');
+    seg = seg.replace(/[\s\/:;=,]+(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    seg = seg.replace(/\((?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียน|แต่ง)\)/i, '');
+    seg = seg.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
+
+    if (!seg) continue;
+
+    if (seg.includes(' และ ') || seg.includes(' และ')) {
+      const parts = seg.split(/\s*และ\s*/).map(a => a.trim()).filter(Boolean);
+      if (parts.length > 1) {
+        const firsts = parts[0].split(',').map(a => a.trim()).filter(Boolean);
+        parsedAuthors.push(...firsts, ...parts.slice(1));
+      } else {
+        parsedAuthors.push(seg);
+      }
+    } else if (seg.includes(',')) {
+      const parts = seg.split(',').map(a => a.trim()).filter(Boolean);
+      if (parts.length === 2 && !/[ก-ฮ]/.test(parts[0]) && !/[ก-ฮ]/.test(parts[1]) && parts[1].length <= 15) {
+        parsedAuthors.push(`${parts[0]}, ${parts[1]}`);
+      } else {
+        parsedAuthors.push(...parts);
+      }
+    } else {
+      parsedAuthors.push(seg);
+    }
+  }
+
+  const cleanAuthors = parsedAuthors.map(a => {
+    let cl = a.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：,]?\s*/i, '');
+    cl = cl.replace(/[\s\/:;=,]+(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    cl = cl.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
+    cl = cl.replace(/\.+$/, '').trim();
+    cl = cl.replace(/\bco\b/i, 'Co');
+    return cl;
   }).filter(Boolean);
 
   if (cleanAuthors.length === 0) {
     if (authorPersonal) {
-      const cleanA = authorPersonal.replace(/\.$/, '').trim();
-      return cleanA.endsWith('.') ? cleanA : `${cleanA}.`;
+      const cleanA = authorPersonal.replace(/\.+$/, '').trim();
+      return `${cleanA}.`;
     }
     return 'ไม่ระบุผู้แต่ง.';
   }
 
   const N = cleanAuthors.length;
-
   if (N === 1) {
     const a = cleanAuthors[0];
     return a.endsWith('.') ? a : `${a}.`;
   }
-
   if (N === 2) {
     return `${cleanAuthors[0]} และ ${cleanAuthors[1]}.`;
   }
-
   if (N === 3) {
     return `${cleanAuthors[0]}, ${cleanAuthors[1]} และ ${cleanAuthors[2]}.`;
   }
-
-  // N >= 4: ลงชื่อผู้แต่งคนแรก และตามด้วย [และคนอื่นๆ (จำนวน) คน]
-  const firstAuthor = cleanAuthors[0];
-  const others = N - 1;
-  return `${firstAuthor} [และคนอื่นๆ ${others} คน].`;
+  return `${cleanAuthors[0]} [และคนอื่นๆ ${N - 1} คน].`;
 }
+
+// Rate limit circuit breaker for Gemini API calls
+let marc21RateLimitedUntil = 0;
 
 // Fetch book price from the Internet (SE-ED, Naiin, Chulabook, Google Books) if missing in UC-TAL MARC record
 async function fetchInternetPrice(title: string, author: string, isbn: string): Promise<string> {
@@ -569,44 +601,53 @@ async function fetchInternetPrice(title: string, author: string, isbn: string): 
     return '165 บาท';
   }
 
-  try {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
-    if (apiKey) {
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-      });
+  const isRateLimited = Date.now() < marc21RateLimitedUntil;
+  if (!isRateLimited) {
+    try {
+      const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+      if (apiKey) {
+        const ai = new GoogleGenAI({
+          apiKey,
+          httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+        });
 
-      const prompt = `ใช้เครื่องมือ Google Search เพื่อค้นหาราคาปกติก่อนลดราคา (ราคาปกปกติ เช่น ราคาปกติ ฿165 หรือ ราคาปกติ 165 บาท ไม่ใช่ราคาลด เช่น 155.1 บาท) ของหนังสือภาษาไทย จากเว็บไซต์ ซีเอ็ด (se-ed.com), นายอินทร์ (naiin.com), หรือ Google สำหรับหนังสือดังต่อไปนี้:
+        const prompt = `ใช้เครื่องมือ Google Search เพื่อค้นหาราคาปกติก่อนลดราคา (ราคาปกปกติ เช่น ราคาปกติ ฿165 หรือ ราคาปกติ 165 บาท ไม่ใช่ราคาลด เช่น 155.1 บาท) ของหนังสือภาษาไทย จากเว็บไซต์ ซีเอ็ด (se-ed.com), นายอินทร์ (naiin.com), หรือ Google สำหรับหนังสือดังต่อไปนี้:
 ชื่อเรื่อง: "${cleanTitle}"
 ผู้แต่ง/วาด: "${author}"
 ISBN: "${isbn}"
 
 ตอบเฉพาะตัวเลขราคาและคำว่า "บาท" เท่านั้น เช่น "165 บาท" หรือ "185 บาท" โดยไม่มีข้อความอธิบายใดๆ ทั้งสิ้น`;
 
-      try {
-        const aiRes = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            tools: [{ googleSearch: {} }]
+        try {
+          const aiRes = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+              tools: [{ googleSearch: {} }]
+            }
+          });
+          if (aiRes.text) {
+            const clean = aiRes.text.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
+            const match = clean.match(/([0-9,.]+)\s*(?:บาท|บ\.|Baht)?/i);
+            if (match) {
+              const num = match[1].replace(/,/g, '');
+              return `${num} บาท`;
+            }
+            return clean;
           }
-        });
-        if (aiRes.text) {
-          const clean = aiRes.text.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
-          const match = clean.match(/([0-9,.]+)\s*(?:บาท|บ\.|Baht)?/i);
-          if (match) {
-            const num = match[1].replace(/,/g, '');
-            return `${num} บาท`;
+        } catch (e: any) {
+          const errStr = String(e?.message || e || '');
+          if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED')) {
+            marc21RateLimitedUntil = Date.now() + 60000;
           }
-          return clean;
         }
-      } catch (e) {
-        console.warn('Google Search Grounding price fetch failed, trying fallback standard model...', e);
+      }
+    } catch (err: any) {
+      const errStr = String(err?.message || err || '');
+      if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED')) {
+        marc21RateLimitedUntil = Date.now() + 60000;
       }
     }
-  } catch (err) {
-    console.error('fetchInternetPrice error:', err);
   }
 
   // Google Books API fallback if Gemini Search fails
@@ -637,16 +678,18 @@ async function fetchInternetSynopsis(title: string, author: string, isbn: string
     return 'ล่าขุมทรัพย์สุดขอบฟ้าในแวนคูเวอร์ (ฉบับการ์ตูน) เบ็คเดินทางมาแวนคูเวอร์เพื่อส่งโดเรมีเรียนภาษาและศิลปะ พวกเขาได้เจอพี่บาร์ต และรับฟังเรื่องราวของคาราเด็กสาวชาวพื้นเมืองที่ถูกขโมยแร็กคูนไป ทั้งสองจึงอาสาช่วยตามหาแร็กคูนด้วยการแกะรอยคำใบ้ของคนร้าย แต่การผจญภัยในเมืองที่เต็มไปด้วยธรรมชาติอันงดงามอย่างแวนคูเวอร์กลับเต็มไปด้วยอุปสรรคนับไม่ถ้วน! แวนคูเวอร์ เมืองแห่งธรรมชาติอันอุดมสมบูรณ์และศูนย์รวมชนพื้นเมือง เบ็คเดินทางมาแวนคูเวอร์เพื่อส่งโดเรมีเรียนภาษาและศิลปะ พวกเขาได้เจอพี่บาร์ตและรับฟังเรื่องราวของคาราเด็กสาวชาวพื้นเมืองที่ถูกขโมยแร็กคูนไป ทั้งสองจึงอาสาช่วยตามหาแร็คคูนด้วยการแกะรอยคำใบ้ของคนร้าย แต่การผจญภัยในเมืองที่เต็มไปด้วยธรรมชาติอันงดงามอย่างแวนคูเวอร์กลับเต็มไปด้วยอุปสรรคนับไม่ถ้วน!';
   }
 
-  try {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
-    if (apiKey) {
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-      });
-      
-      const cleanTitle = (title || '').split('/')[0].split('=')[0].replace(/[\/:]\s*$/, '').trim();
-      const prompt = `ใช้เครื่องมือ Google Search เพื่อค้นหาข้อมูลเรื่องย่อ (Synopsis/Plot) จากแหล่งข้อมูลร้านหนังสือภาษาไทยออนไลน์ชั้นนำ เช่น SE-ED (se-ed.com), นายอินทร์ (naiin.com), หรือ Google สำหรับหนังสือดังต่อไปนี้:
+  const isRateLimited = Date.now() < marc21RateLimitedUntil;
+  if (!isRateLimited) {
+    try {
+      const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+      if (apiKey) {
+        const ai = new GoogleGenAI({
+          apiKey,
+          httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+        });
+        
+        const cleanTitle = (title || '').split('/')[0].split('=')[0].replace(/[\/:]\s*$/, '').trim();
+        const prompt = `ใช้เครื่องมือ Google Search เพื่อค้นหาข้อมูลเรื่องย่อ (Synopsis/Plot) จากแหล่งข้อมูลร้านหนังสือภาษาไทยออนไลน์ชั้นนำ เช่น SE-ED (se-ed.com), นายอินทร์ (naiin.com), หรือ Google สำหรับหนังสือดังต่อไปนี้:
 ชื่อเรื่อง: "${cleanTitle}"
 ผู้แต่ง/ผู้รับผิดชอบ: "${author}"
 ชุดหนังสือ: "${series}"
@@ -657,38 +700,30 @@ ISBN: "${isbn}"
 1. ให้ตอบเฉพาะข้อความเรื่องย่อภาษาไทยผลลัพธ์ที่ได้จากการสรุปข้อมูลในเว็บ se-ed.com หรือ naiin.com เท่านั้น ห้ามเขียนเกริ่นนำ ห้ามพิมพ์คำพูดเสริม หรือจัดรูปแบบมาร์กดาวน์ใดๆ ทั้งสิ้น
 2. หากค้นหาไม่พบข้อมูลจริง ให้วิเคราะห์จากชื่อเรื่องและหมวดหมู่แล้วเรียบเรียงเรื่องย่อที่สอดคล้องอย่างสมจริงที่สุด โดยไม่ต้องบอกผู้ใช้ว่าค้นหาไม่เจอ`;
 
-      try {
-        const aiRes = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            tools: [{ googleSearch: {} }]
-          }
-        });
-        if (aiRes.text) {
-          return aiRes.text.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
-        }
-      } catch (e) {
-        console.warn('Google Search Grounding synopsis fetch failed, trying fallback model...', e);
-        // Fallback without search if grounding fails or has transient issues
         try {
-          const aiResFallback = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: `เขียนเรื่องย่อภาษาไทยสั้นๆ กระชับและน่าอ่าน (2-3 ประโยค สำหรับลงในเขตข้อมูล MARC 21 Tag 520 เรื่องย่อ) สำหรับหนังสือ:
-ชื่อเรื่อง: "${title}"
-ผู้แต่ง/วาด: "${author}"
-ชุดหนังสือ: "${series}"
-ISBN: "${isbn}"
-ตอบเฉพาะข้อความเรื่องย่อภาษาไทยเท่านั้น โดยไม่ต้องใส่คำนำหรือมาร์กดาวน์`
+          const aiRes = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: {
+              tools: [{ googleSearch: {} }]
+            }
           });
-          if (aiResFallback.text) {
-            return aiResFallback.text.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
+          if (aiRes.text) {
+            return aiRes.text.replace(/```[a-z]*\n?/gi, '').replace(/```/g, '').trim();
           }
-        } catch {}
+        } catch (e: any) {
+          const errStr = String(e?.message || e || '');
+          if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED')) {
+            marc21RateLimitedUntil = Date.now() + 60000;
+          }
+        }
+      }
+    } catch (err: any) {
+      const errStr = String(err?.message || err || '');
+      if (errStr.includes('429') || errStr.includes('quota') || errStr.includes('RESOURCE_EXHAUSTED')) {
+        marc21RateLimitedUntil = Date.now() + 60000;
       }
     }
-  } catch (err) {
-    console.error('fetchInternetSynopsis outer error:', err);
   }
 
   return `หนังสือ "${title.split('/')[0].trim()}" นำเสนอเนื้อหาสาระและสารประโยชน์ที่น่าสนใจ เหมาะสำหรับผู้อ่านและผู้ศึกษาค้นคว้า`;

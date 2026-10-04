@@ -94,7 +94,14 @@ export function getPureAuthorCutter(rawCutter: string, authorName: string): stri
 
 export const STANDARD_LIBRARY_AUTHORS: { authorName: string; type: 'personal' | 'corporate'; authorCutter: string }[] = [
   { authorName: 'กอมโดริ co.', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'กอมโดริ co', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'กอมโดริ Co.', type: 'corporate', authorCutter: 'ก363' },
   { authorName: 'กอมโดริ', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'Gomdori co.', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'Gomdori co', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'Gomdori Co.', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'Gomdori', type: 'corporate', authorCutter: 'ก363' },
+  { authorName: 'Robert T. Kiyosaki', type: 'personal', authorCutter: 'ร228' },
   { authorName: 'กฤษณา อโศกสิน', type: 'personal', authorCutter: 'ก108' },
   { authorName: 'กรมวิชาการ กระทรวงศึกษาธิการ', type: 'corporate', authorCutter: 'ก465' },
   { authorName: 'กระทรวงวัฒนธรรม', type: 'corporate', authorCutter: 'ก465' },
@@ -132,9 +139,94 @@ export const STANDARD_LIBRARY_AUTHORS: { authorName: string; type: 'personal' | 
   { authorName: 'สำนักงานคณะกรรมการการศึกษาขั้นพื้นฐาน', type: 'corporate', authorCutter: 'ส465' },
   { authorName: 'อัมรา เรืองศิริ', type: 'personal', authorCutter: 'อ547' },
   { authorName: 'อาจินต์ ปัญจพรรค์', type: 'personal', authorCutter: 'อ213' },
-  { authorName: 'อานันท์ ปันยารชุน', type: 'personal', authorCutter: 'อ214' },
-  { authorName: 'Gomdori co.', type: 'corporate', authorCutter: 'ก363' }
+  { authorName: 'อานันท์ ปันยารชุน', type: 'personal', authorCutter: 'อ214' }
 ];
+
+// Helper to get work mark (first character of title)
+export function getAuthorTitleWorkMark(title: string): string {
+  const frontVowels = ['เ', 'แ', 'โ', 'ใ', 'ไ'];
+  let cleanTitle = (title || '').replace(/^[0-9\s"“'‘\(\[\{:]+/g, '').trim();
+  if (frontVowels.includes(cleanTitle.charAt(0))) {
+    cleanTitle = cleanTitle.substring(1);
+  }
+  return cleanTitle.charAt(0) || '';
+}
+
+// Check if an author already has a registered author cutter code in the system
+export function findExistingAuthorBaseCutter(authorName: string, records?: Marc21Record[]): string | null {
+  const cleanName = (authorName || '').trim();
+  if (!cleanName) return null;
+  const lowerName = cleanName.toLowerCase();
+
+  // 1. Check known standard library authors
+  const foundStandard = STANDARD_LIBRARY_AUTHORS.find(
+    a => a.authorName.toLowerCase() === lowerName || cleanName.toLowerCase().includes(a.authorName.toLowerCase()) || a.authorName.toLowerCase().includes(cleanName.toLowerCase())
+  );
+  if (foundStandard && foundStandard.authorCutter) {
+    return foundStandard.authorCutter;
+  }
+
+  // 2. Check current records in memory
+  if (records && records.length > 0) {
+    for (const r of records) {
+      if (r.author_personal && r.author_personal.trim().toLowerCase() === lowerName && r.cutter_082b && r.cutter_082b !== '-') {
+        const pure = getPureAuthorCutter(r.cutter_082b, r.author_personal);
+        if (pure && pure !== '-') return pure;
+      }
+    }
+  }
+
+  return null;
+}
+
+// Get cutter for author: Prioritize existing system author cutter, or compute from formula
+export function getExistingOrCalculatedCutter(authorName: string, title: string, records?: Marc21Record[], existingCutters?: Set<string>): { cutter: string; isFromExistingSystem: boolean } {
+  const existingBase = findExistingAuthorBaseCutter(authorName, records);
+  const workMark = getAuthorTitleWorkMark(title);
+
+  if (existingBase) {
+    return {
+      cutter: `${existingBase}${workMark}`,
+      isFromExistingSystem: true
+    };
+  }
+
+  return {
+    cutter: calculateThaiCutter(authorName, title, existingCutters),
+    isFromExistingSystem: false
+  };
+}
+
+// Auto DDC mapping according to storage location rules
+export function getAutoDdcForStorageLocation(location: string): string | null {
+  const loc = (location || '').trim();
+  if (!loc) return null;
+  
+  // Cartoon locations -> ย (การ์ตูน วิทย์/คณิต, การ์ตูน สังคม, การ์ตูน ความรู้ทั่วไป, การ์ตูน ภาษา/วรรณกรรม)
+  if (
+    loc === 'การ์ตูน วิทย์/คณิต' ||
+    loc === 'การ์ตูน สังคม' ||
+    loc === 'การ์ตูน ความรู้ทั่วไป' ||
+    loc === 'การ์ตูน ภาษา/วรรณกรรม' ||
+    loc.includes('การ์ตูน') ||
+    loc.startsWith('ย')
+  ) {
+    return 'ย';
+  }
+
+  // Children locations -> ด (สำหรับเด็ก, สำหรับเด็ก (ภาษาฯ), สำหรับเด็ก (ศาสนา))
+  if (
+    loc === 'สำหรับเด็ก' ||
+    loc === 'สำหรับเด็ก (ภาษาฯ)' ||
+    loc === 'สำหรับเด็ก (ศาสนา)' ||
+    loc.includes('เด็ก') ||
+    loc.startsWith('ด')
+  ) {
+    return 'ด';
+  }
+
+  return null;
+}
 
 export const AuthorInputWithSuggestions = ({
   value,
@@ -150,7 +242,7 @@ export const AuthorInputWithSuggestions = ({
   currentTitle?: string;
 }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [suggestions, setSuggestions] = useState<{ name: string; cutter: string }[]>([]);
+  const [suggestions, setSuggestions] = useState<{ name: string; cutter: string; isExisting: boolean }[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -178,14 +270,20 @@ export const AuthorInputWithSuggestions = ({
           .map(d => d.author)
           .filter((a): a is string => Boolean(a && a.trim()));
 
-        const combinedNames = Array.from(new Set([...sessionAuthors, ...dbAuthors])).slice(0, 8);
+        // Also check standard library authors
+        const stdAuthors = STANDARD_LIBRARY_AUTHORS
+          .filter(a => a.authorName.toLowerCase().includes(q.toLowerCase()))
+          .map(a => a.authorName);
+
+        const combinedNames = Array.from(new Set([...sessionAuthors, ...dbAuthors, ...stdAuthors])).slice(0, 8);
         const existingCutters = new Set(records.map(r => r.cutter_082b).filter(Boolean));
 
         const mapped = combinedNames.map(authorName => {
-          const cutter = calculateThaiCutter(authorName, currentTitle || 'หนังสือ', existingCutters);
+          const res = getExistingOrCalculatedCutter(authorName, currentTitle || 'หนังสือ', records, existingCutters);
           return {
             name: authorName,
-            cutter
+            cutter: res.cutter,
+            isExisting: res.isFromExistingSystem
           };
         });
 
@@ -240,7 +338,7 @@ export const AuthorInputWithSuggestions = ({
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-slate-900">{item.name}</span>
                 <span className="text-[11px] font-mono font-bold text-emerald-800 bg-emerald-100/90 px-2 py-0.5 rounded border border-emerald-300">
-                  คัตเตอร์: {item.cutter}
+                  คัตเตอร์: {item.cutter} {item.isExisting ? '⭐ (ในระบบ)' : ''}
                 </span>
               </div>
               <span className="text-[10px] text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full border border-emerald-300 font-bold">
@@ -299,8 +397,8 @@ export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): 
   // If text already has [และคนอื่นๆ ...], preserve author + brackets cleanly
   const existingOthersMatch = text.match(/^(.+?)\s*(\[และคนอื่นๆ(?:\s*\(?[0-9]+\)?\s*คน)?\]\.?)$/i);
   if (existingOthersMatch) {
-    let mainA = existingOthersMatch[1].replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：]?\s*/i, '');
-    mainA = mainA.replace(/\s*[:：]?\s*(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    let mainA = existingOthersMatch[1].replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：,]?\s*/i, '');
+    mainA = mainA.replace(/[\s\/:;=,]+(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
     mainA = mainA.replace(/[\s\/:;=,.]+$/, '').trim();
     return `${mainA} ${existingOthersMatch[2].endsWith('.') ? existingOthersMatch[2] : existingOthersMatch[2] + '.'}`;
   }
@@ -319,11 +417,14 @@ export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): 
   const authorSegments: string[] = [];
   for (const seg of segments) {
     const isExplicitNonAuthor = (
-      /[:：]\s*(?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|illustrat|translated|translator|editor|บก\.|บรรณาธิการ)/i.test(seg) ||
-      /^(?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|ภาพถ่าย|รูปภาพ|illustrated|illustrations|illustration|illustrator|illus\.|translated|translator|trans\.|editor|บก\.|บรรณาธิการ)\s*[:：]/i.test(seg) ||
-      /\((?:แปล|ผู้แปล|ภาพประกอบ|ภาพ|ผู้วาด|วาดภาพ|illustrator|translator|editor)\)/i.test(seg) ||
-      /(?:แปลโดย|ผู้แปล|ภาพประกอบโดย|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพโดย|วาดภาพโดย|illustrated by|translated by)/i.test(seg) ||
-      /,\s*(?:แปล|ผู้แปล|ภาพประกอบ|ภาพ|ผู้วาด|วาดภาพ|illustrator|translator)\s*$/i.test(seg)
+      // Keyword with space, colon, or comma at the end of the segment: e.g. "Kang Gyung-Hyo ภาพประกอบ", "กัญญารัตน์ จิราสวัสดิ์ แปล.", "John Doe, illus."
+      /[\s:：,](?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|ภาพถ่าย|รูปภาพ|illustrat|illustrated|illustrations|illustration|illustrator|illus\.|translator|translated|trans\.|translation|editor|ed\.|edition|บก\.|บรรณาธิการ)\s*[\.]?$/i.test(seg) ||
+      // Keyword at the beginning of segment: e.g. "ภาพประกอบ : Kang Gyung-Hyo", "แปลโดย ภาสกร", "ภาพโดย..."
+      /^(?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพ|ผู้วาด|วาดภาพโดย|วาดภาพ|ภาพ|ภาพถ่าย|รูปภาพ|illustrated|illustrations|illustration|illustrator|illus\.|translated|translator|trans\.|editor|บก\.|บรรณาธิการ)\s*[:：,\s]/i.test(seg) ||
+      // Parenthetical keywords: e.g. "(ภาพประกอบ)", "(แปล)", "(ผู้แปล)", "(illustrator)"
+      /\((?:แปล|ผู้แปล|แปลโดย|ภาพประกอบ|ภาพ|ผู้วาด|ผู้วาดภาพ|วาดภาพ|illustrator|illus\.|translator|trans\.|editor|ed\.)\)/i.test(seg) ||
+      // Mid-segment keywords
+      /(?:แปลโดย|ผู้แปล|ภาพประกอบโดย|ภาพโดย|ผู้วาดภาพประกอบ|ผู้วาดภาพโดย|วาดภาพโดย|illustrated by|translated by)/i.test(seg)
     );
 
     if (!isExplicitNonAuthor) {
@@ -342,8 +443,8 @@ export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): 
   // Combine remaining author segments and parse individual author names
   let parsedAuthors: string[] = [];
   for (let seg of authorSegments) {
-    seg = seg.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：]?\s*/i, '');
-    seg = seg.replace(/\s*[:：]?\s*(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    seg = seg.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：,]?\s*/i, '');
+    seg = seg.replace(/[\s\/:;=,]+(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
     seg = seg.replace(/\((?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียน|แต่ง)\)/i, '');
     seg = seg.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
 
@@ -370,10 +471,11 @@ export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): 
   }
 
   const cleanAuthors = parsedAuthors.map(a => {
-    let cl = a.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：]?\s*/i, '');
-    cl = cl.replace(/\s*[:：]?\s*(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
+    let cl = a.replace(/^(?:เรื่อง|ผู้แต่ง|ผู้เขียน|เขียนโดย|เขียน|แต่งโดย|แต่ง)\s*[:：,]?\s*/i, '');
+    cl = cl.replace(/[\s\/:;=,]+(?:เขียนโดย|ผู้แต่ง|ผู้เขียน|แต่งโดย|เขียน|เรื่อง|แต่ง)\s*$/i, '');
     cl = cl.replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim();
     cl = cl.replace(/\.+$/, '').trim();
+    cl = cl.replace(/\bco\b/i, 'Co');
     return cl;
   }).filter(Boolean);
 
@@ -388,7 +490,7 @@ export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): 
   const N = cleanAuthors.length;
   if (N === 1) {
     const a = cleanAuthors[0];
-    return `${a}.`;
+    return a.endsWith('.') ? a : `${a}.`;
   }
   if (N === 2) {
     return `${cleanAuthors[0]} และ${cleanAuthors[1]}.`;
@@ -877,14 +979,54 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
 
   // Handle inline change of storage_location from dropdown
   const handleStorageLocationChange = (recordId: string, newLocation: string) => {
-    setRecords(prev => prev.map(r => r.id === recordId ? { ...r, storage_location: newLocation } : r));
-    showToast(`📍 อัปเดตสถานที่จัดเก็บเป็น "${newLocation}" เรียบร้อยแล้ว`);
+    const autoDdc = getAutoDdcForStorageLocation(newLocation);
+    setRecords(prev => prev.map(r => {
+      if (r.id !== recordId) return r;
+      let updatedTags = Array.isArray(r.marc_tags) ? [...r.marc_tags] : [];
+      if (autoDdc) {
+        const idx082 = updatedTags.findIndex(t => t.tagID === '082' || (t as any).tag === '082');
+        if (idx082 >= 0) {
+          updatedTags[idx082] = { ...updatedTags[idx082], data: `$a${autoDdc} $b${r.cutter_082b || ''}` };
+        }
+      }
+      return {
+        ...r,
+        storage_location: newLocation,
+        ...(autoDdc ? { ddc_082a: autoDdc } : {}),
+        marc_tags: updatedTags
+      };
+    }));
+    if (autoDdc) {
+      showToast(`📍 เปลี่ยนสถานที่จัดเก็บเป็น "${newLocation}" และปรับ 082 $a (DDC) เป็น "${autoDdc}" อัตโนมัติ`);
+    } else {
+      showToast(`📍 อัปเดตสถานที่จัดเก็บเป็น "${newLocation}" เรียบร้อยแล้ว`);
+    }
   };
 
   // Handle inline change of 650 $a from dropdown
   const handleSubjectChange = (recordId: string, newSubject: string) => {
     setRecords(prev => prev.map(r => r.id === recordId ? { ...r, subject_650a: newSubject } : r));
     showToast(`🏷️ อัปเดตหัวเรื่อง 650 $a เป็น "${newSubject}" เรียบร้อยแล้ว`);
+  };
+
+  // Handle inline change of 250 (พิมพ์ครั้งที่)
+  const handleEditionChange = (recordId: string, newEdition: string) => {
+    const cleanEdition = newEdition.trim() || 'พิมพ์ครั้งที่ 1';
+    setRecords(prev => prev.map(r => {
+      if (r.id !== recordId) return r;
+      let updatedTags = Array.isArray(r.marc_tags) ? [...r.marc_tags] : [];
+      const idx250 = updatedTags.findIndex(t => t.tagID === '250' || (t as any).tag === '250');
+      const tagObj = { tagID: '250', indc1: '', indc2: '', data: `$a${cleanEdition}` };
+      if (idx250 >= 0) updatedTags[idx250] = tagObj;
+      else updatedTags.push(tagObj);
+
+      return {
+        ...r,
+        edition_250: cleanEdition,
+        marc_tags: updatedTags
+      };
+    }));
+    showToast(`📖 อัปเดตข้อมูล 250 พิมพ์ครั้งที่ เป็น "${cleanEdition}" เรียบร้อย`);
   };
 
   // Handle inline change of 700 (ผู้แปล / ผู้แต่งร่วม) from dropdown
@@ -2623,7 +2765,31 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                       <td className="p-2.5 text-slate-600 max-w-md truncate" title={r.summary_520}>
                         {r.summary_520}
                       </td>
-                      <td className="p-2.5 text-slate-600">{r.edition_250}</td>
+                      <td className="p-1.5 min-w-[140px]">
+                        <select
+                          value={r.edition_250 || 'พิมพ์ครั้งที่ 1'}
+                          onChange={(e) => handleEditionChange(r.id, e.target.value)}
+                          title={`แก้ไขข้อมูล 250 พิมพ์ครั้งที่: ${r.edition_250 || 'พิมพ์ครั้งที่ 1'}`}
+                          className="w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 hover:border-slate-400 focus:border-emerald-500 rounded-lg px-2 py-1.5 text-xs text-slate-800 font-medium cursor-pointer transition focus:outline-none focus:ring-2 focus:ring-emerald-500/20 shadow-2xs"
+                        >
+                          <option value="พิมพ์ครั้งที่ 1">พิมพ์ครั้งที่ 1</option>
+                          <option value="พิมพ์ครั้งที่ 2">พิมพ์ครั้งที่ 2</option>
+                          <option value="พิมพ์ครั้งที่ 3">พิมพ์ครั้งที่ 3</option>
+                          <option value="พิมพ์ครั้งที่ 4">พิมพ์ครั้งที่ 4</option>
+                          <option value="พิมพ์ครั้งที่ 5">พิมพ์ครั้งที่ 5</option>
+                          <option value="พิมพ์ครั้งที่ 6">พิมพ์ครั้งที่ 6</option>
+                          <option value="พิมพ์ครั้งที่ 7">พิมพ์ครั้งที่ 7</option>
+                          <option value="พิมพ์ครั้งที่ 8">พิมพ์ครั้งที่ 8</option>
+                          <option value="พิมพ์ครั้งที่ 9">พิมพ์ครั้งที่ 9</option>
+                          <option value="พิมพ์ครั้งที่ 10">พิมพ์ครั้งที่ 10</option>
+                          <option value="ฉบับปรับปรุงใหม่">ฉบับปรับปรุงใหม่</option>
+                          <option value="ฉบับปรับปรุงแก้ไข">ฉบับปรับปรุงแก้ไข</option>
+                          <option value="ฉบับพิมพ์ครั้งแรก">ฉบับพิมพ์ครั้งแรก</option>
+                          {r.edition_250 && !['พิมพ์ครั้งที่ 1', 'พิมพ์ครั้งที่ 2', 'พิมพ์ครั้งที่ 3', 'พิมพ์ครั้งที่ 4', 'พิมพ์ครั้งที่ 5', 'พิมพ์ครั้งที่ 6', 'พิมพ์ครั้งที่ 7', 'พิมพ์ครั้งที่ 8', 'พิมพ์ครั้งที่ 9', 'พิมพ์ครั้งที่ 10', 'ฉบับปรับปรุงใหม่', 'ฉบับปรับปรุงแก้ไข', 'ฉบับพิมพ์ครั้งแรก'].includes(r.edition_250) && (
+                            <option value={r.edition_250}>{r.edition_250}</option>
+                          )}
+                        </select>
+                      </td>
                       <td className="p-2.5 text-slate-700 font-mono">{r.price_541}</td>
                       <td className="p-2.5 text-slate-600">{r.series_490}</td>
                       <td className="p-1.5 min-w-[180px]">
@@ -2935,28 +3101,30 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                         .filter(r => r.id !== editingRecord.id && r.cutter_082b)
                         .map(r => r.cutter_082b)
                     );
-                    const newCutter = calculateThaiCutter(val, editingRecord.title_245a, existingCutters);
+                    const res = getExistingOrCalculatedCutter(val, editingRecord.title_245a, records, existingCutters);
                     setEditingRecord({
                       ...editingRecord,
                       author_personal: val,
-                      cutter_082b: newCutter
+                      cutter_082b: res.cutter
                     });
                   }}
-                  onSelectAuthor={(selectedAuthor) => {
+                  onSelectAuthor={(selectedAuthor, calculatedCutter) => {
                     const existingCutters = new Set(
                       records
                         .filter(r => r.id !== editingRecord.id && r.cutter_082b)
                         .map(r => r.cutter_082b)
                     );
-                    const newCutter = calculateThaiCutter(selectedAuthor, editingRecord.title_245a, existingCutters);
+                    const res = getExistingOrCalculatedCutter(selectedAuthor, editingRecord.title_245a, records, existingCutters);
+                    const finalCutter = calculatedCutter || res.cutter;
                     setEditingRecord({
                       ...editingRecord,
                       author_personal: selectedAuthor,
-                      cutter_082b: newCutter
+                      cutter_082b: finalCutter
                     });
-                    showToast(`👤 เลือกผู้แต่ง "${selectedAuthor}" และคำนวณคัตเตอร์ "${newCutter}" เรียบร้อย`);
+                    showToast(`👤 เลือกผู้แต่ง "${selectedAuthor}" และดึงเลขประจำหนังสือ "${finalCutter}" เรียบร้อย`);
                   }}
                   records={records}
+                  currentTitle={editingRecord.title_245a}
                 />
               </div>
 
@@ -2972,24 +3140,58 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
 
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block font-semibold text-slate-700">082 $b เลขประจำหนังสือ (Cutter)</label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const existingCutters = new Set(
-                        records
-                          .filter(r => r.id !== editingRecord.id && r.cutter_082b)
-                          .map(r => r.cutter_082b)
-                      );
-                      const recut = calculateThaiCutter(editingRecord.author_personal, editingRecord.title_245a, existingCutters);
-                      setEditingRecord({ ...editingRecord, cutter_082b: recut });
-                      showToast(`🔄 คำนวณเลขคัตเตอร์ใหม่: ${recut}`);
-                    }}
-                    className="text-[11px] text-indigo-600 hover:text-indigo-800 font-medium hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>คำนวณใหม่</span>
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <label className="block font-semibold text-slate-700">082 $b เลขประจำหนังสือ (Cutter)</label>
+                    {(() => {
+                      const sysBase = findExistingAuthorBaseCutter(editingRecord.author_personal, records);
+                      if (sysBase) {
+                        return (
+                          <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded border border-emerald-300">
+                            ⭐ มีในระบบ ({sysBase})
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {(() => {
+                      const sysBase = findExistingAuthorBaseCutter(editingRecord.author_personal, records);
+                      if (sysBase) {
+                        const workMark = getAuthorTitleWorkMark(editingRecord.title_245a);
+                        const sysCutter = `${sysBase}${workMark}`;
+                        if (editingRecord.cutter_082b !== sysCutter) {
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingRecord({ ...editingRecord, cutter_082b: sysCutter });
+                                showToast(`👤 ใช้เลขคัตเตอร์ที่มีในระบบ: ${sysCutter}`);
+                              }}
+                              title="ใช้เลขประจำหนังสือที่มีอยู่แล้วในระบบสำหรับผู้แต่งท่านนี้"
+                              className="text-[11px] text-emerald-700 hover:text-emerald-900 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                            >
+                              <span>👤 ใช้เลขในระบบ</span>
+                            </button>
+                          );
+                        }
+                      }
+                      return null;
+                    })()}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const recut = calculateThaiCutter(editingRecord.author_personal, editingRecord.title_245a);
+                        setEditingRecord({ ...editingRecord, cutter_082b: recut });
+                        showToast(`🔄 คำนวณเลขคัตเตอร์ใหม่ตามสูตรตารางเทียบมาตรฐาน: ${recut}`);
+                      }}
+                      title="คำนวณใหม่ตามสูตรตารางเทียบมาตรฐาน (สูตรมาตรฐาน)"
+                      className="text-[11px] text-indigo-600 hover:text-indigo-800 font-bold hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>คำนวณใหม่ (สูตรมาตรฐาน)</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="relative">
                   <input
@@ -3032,6 +3234,33 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
               </div>
 
               <div>
+                <label className="block font-semibold text-slate-700 mb-1">250 พิมพ์ครั้งที่ (Edition)</label>
+                <input
+                  type="text"
+                  list="edition-250-options"
+                  value={editingRecord.edition_250 || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, edition_250: e.target.value })}
+                  placeholder="เช่น พิมพ์ครั้งที่ 1"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                />
+                <datalist id="edition-250-options">
+                  <option value="พิมพ์ครั้งที่ 1" />
+                  <option value="พิมพ์ครั้งที่ 2" />
+                  <option value="พิมพ์ครั้งที่ 3" />
+                  <option value="พิมพ์ครั้งที่ 4" />
+                  <option value="พิมพ์ครั้งที่ 5" />
+                  <option value="พิมพ์ครั้งที่ 6" />
+                  <option value="พิมพ์ครั้งที่ 7" />
+                  <option value="พิมพ์ครั้งที่ 8" />
+                  <option value="พิมพ์ครั้งที่ 9" />
+                  <option value="พิมพ์ครั้งที่ 10" />
+                  <option value="ฉบับปรับปรุงใหม่" />
+                  <option value="ฉบับปรับปรุงแก้ไข" />
+                  <option value="ฉบับพิมพ์ครั้งแรก" />
+                </datalist>
+              </div>
+
+              <div>
                 <label className="block font-semibold text-slate-700 mb-1">260 $c ปีที่พิมพ์</label>
                 <input
                   type="text"
@@ -3047,6 +3276,17 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                   type="text"
                   value={editingRecord.pages_300a}
                   onChange={(e) => setEditingRecord({ ...editingRecord, pages_300a: e.target.value })}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">300 $b ภาพประกอบ</label>
+                <input
+                  type="text"
+                  value={editingRecord.illustration_300b || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, illustration_300b: e.target.value })}
+                  placeholder="เช่น ภาพประกอบ, ภาพประกอบ (สี)"
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
                 />
               </div>
@@ -3108,7 +3348,16 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                     value={allAvailableStorageLocations.includes(editingRecord.storage_location) ? editingRecord.storage_location : ''}
                     onChange={(e) => {
                       if (e.target.value) {
-                        setEditingRecord({ ...editingRecord, storage_location: e.target.value });
+                        const newLoc = e.target.value;
+                        const autoDdc = getAutoDdcForStorageLocation(newLoc);
+                        setEditingRecord({
+                          ...editingRecord,
+                          storage_location: newLoc,
+                          ...(autoDdc ? { ddc_082a: autoDdc } : {})
+                        });
+                        if (autoDdc) {
+                          showToast(`📍 เลือกสถานที่จัดเก็บ "${newLoc}" และเปลี่ยน 082 $a เป็น "${autoDdc}" อัตโนมัติ`);
+                        }
                       }
                     }}
                     className="w-full p-2 bg-slate-100 border border-slate-200 rounded-xl text-xs text-slate-700 font-medium"
@@ -3121,7 +3370,15 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                   <input
                     type="text"
                     value={editingRecord.storage_location}
-                    onChange={(e) => setEditingRecord({ ...editingRecord, storage_location: e.target.value })}
+                    onChange={(e) => {
+                      const newLoc = e.target.value;
+                      const autoDdc = getAutoDdcForStorageLocation(newLoc);
+                      setEditingRecord({
+                        ...editingRecord,
+                        storage_location: newLoc,
+                        ...(autoDdc ? { ddc_082a: autoDdc } : {})
+                      });
+                    }}
                     placeholder="พิมพ์หรือเลือกสถานที่จัดเก็บ..."
                     className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"
                   />
@@ -3268,9 +3525,18 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
               <button
                 type="button"
                 onClick={async () => {
-                  setRecords(prev => prev.map(item => item.id === editingRecord.id ? editingRecord : item));
-                  await handleSyncToLibrary(editingRecord);
+                  let updatedTags = Array.isArray(editingRecord.marc_tags) ? [...editingRecord.marc_tags] : [];
+                  if (editingRecord.edition_250) {
+                    const idx250 = updatedTags.findIndex(t => t.tagID === '250' || (t as any).tag === '250');
+                    const tagObj = { tagID: '250', indc1: '', indc2: '', data: `$a${editingRecord.edition_250}` };
+                    if (idx250 >= 0) updatedTags[idx250] = tagObj;
+                    else updatedTags.push(tagObj);
+                  }
+                  const finalRec = { ...editingRecord, marc_tags: updatedTags };
+                  setRecords(prev => prev.map(item => item.id === finalRec.id ? finalRec : item));
+                  await handleSyncToLibrary(finalRec);
                   setEditingRecord(null);
+                  showToast(`💾 บันทึกข้อมูลและพิมพ์ครั้งที่ "${finalRec.edition_250 || 'พิมพ์ครั้งที่ 1'}" เรียบร้อยแล้ว`);
                 }}
                 className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer flex items-center gap-1.5"
               >

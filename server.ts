@@ -2561,7 +2561,7 @@ Return strictly valid JSON:
         let rawText = "{}";
         try {
           const response = await activeAi.models.generateContent({
-            model: 'gemini-3.8-flash',
+            model: 'gemini-2.5-flash',
             contents: [
               {
                 inlineData: {
@@ -2577,28 +2577,7 @@ Return strictly valid JSON:
           });
           rawText = response.text || "{}";
         } catch (m1Err: any) {
-          console.warn('Primary model gemini-3.8-flash notice, attempting fallback model gemini-3.1-flash-lite:', m1Err?.message || m1Err);
-          try {
-            const fallbackResponse = await activeAi.models.generateContent({
-              model: 'gemini-3.1-flash-lite',
-              contents: [
-                {
-                  inlineData: {
-                    data: base64Data,
-                    mimeType: mimeType
-                  }
-                },
-                promptText
-              ],
-              config: {
-                responseMimeType: 'application/json'
-              }
-            });
-            rawText = fallbackResponse.text || "{}";
-          } catch (m2Err: any) {
-            console.warn('Fallback model gemini-3.1-flash-lite notice:', m2Err?.message || m2Err);
-            throw m2Err;
-          }
+          console.warn('Cover OCR analysis notice:', m1Err?.message || m1Err);
         }
 
         const result = JSON.parse(rawText);

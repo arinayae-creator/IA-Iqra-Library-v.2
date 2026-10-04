@@ -104,7 +104,7 @@ Return strictly valid JSON:
     let rawText = "{}";
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash',
         contents: [
           {
             inlineData: {
@@ -120,11 +120,11 @@ Return strictly valid JSON:
       });
       rawText = response.text || "{}";
     } catch (m1Err: any) {
-      console.warn('Primary model gemini-3.8-flash notice, attempting fallback model gemini-3.1-flash-lite:', m1Err?.message || m1Err);
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      console.warn('Scan cover primary model error, retrying:', m1Err?.message || m1Err);
+      await new Promise(resolve => setTimeout(resolve, 1000));
       try {
         const fallbackResponse = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
+          model: 'gemini-2.5-flash',
           contents: [
             {
               inlineData: {
@@ -140,7 +140,7 @@ Return strictly valid JSON:
         });
         rawText = fallbackResponse.text || "{}";
       } catch (fbErr: any) {
-        console.warn('Fallback model gemini-3.1-flash-lite notice:', fbErr?.message || fbErr);
+        console.warn('Scan cover fallback error:', fbErr?.message || fbErr);
         rawText = "{}";
       }
     }
