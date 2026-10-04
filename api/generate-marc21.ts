@@ -80,7 +80,7 @@ export interface Marc21Record {
   marc_tags?: MarcTagItem[];
 }
 
-// Official Thai Author Cutter Table Standard (ตารางการให้เลขคัตเตอร์ผู้แต่งภาษาไทย: TK Park, จุฬาฯ, มอ.)
+// Official Thai Author Cutter Table Standard (ตารางการให้เลขคัตเตอร์ผู้แต่งภาษาไทย: TK Park, จุฬาฯ, มอ. - สูตรมาตรฐานเลข 4 หลัก)
 export function generateThaiCutter(author: string, title: string, existingCutters?: Set<string>): string {
   const consonantTable: Record<string, number> = {
     'ก': 1, 'ข': 1, 'ค': 1, 'ฆ': 1,
@@ -92,7 +92,7 @@ export function generateThaiCutter(author: string, title: string, existingCutter
     'ร': 7, 'ล': 7, 'ว': 7,
     'ศ': 8, 'ษ': 8, 'ส': 8,
     'ห': 9, 'ฬ': 9, 'อ': 9, 'ฮ': 9,
-    'ฤ': 10, 'ฦ': 10
+    'ฤ': 1, 'ฦ': 1
   };
 
   const vowelTable: Record<string, number> = {
@@ -111,7 +111,7 @@ export function generateThaiCutter(author: string, title: string, existingCutter
   let cleanAuthor = (author || '').trim();
   cleanAuthor = cleanAuthor.replace(/^(นาย|นาง|นางสาว|ดร\.|ศ\.|รศ\.|ผศ\.|หม่อม|ม\.ร\.ว\.|ม\.ล\.|อาจารย์|พี่|ป้า|น้า|ลุง|ครู)/g, '').trim();
   
-  // Extract ALL Thai/English characters, SKIPPING commas, spaces, periods (e.g. ลี, บงกี -> ['ล', 'ี', 'บ', 'ง', 'ก', 'ี'])
+  // Extract ALL Thai/English characters, SKIPPING commas, spaces, periods
   const chars = cleanAuthor.replace(/[^\u0E00-\u0E7Fa-zA-Z]/g, '').split('');
 
   let targetChars = chars;
@@ -120,50 +120,42 @@ export function generateThaiCutter(author: string, title: string, existingCutter
     targetChars = cleanT.split('');
   }
 
-  if (targetChars.length === 0) return 'ม100ก';
+  if (targetChars.length === 0) return 'ม1000ก';
 
   let initialChar = '';
-  let digits = '';
-  let nextExtraIndex = 3;
+  const digitsArray: number[] = [];
 
   const c0 = targetChars[0] || '';
-  const c1 = targetChars[1] || '';
-  const c2 = targetChars[2] || '';
+  let startIndex = 1;
 
   if (frontVowels.includes(c0)) {
-    initialChar = c1; // First consonant after front vowel
-    const frontVowelCode = vowelTable[c0] || 8;
-
-    if (['ร', 'ล', 'ว'].includes(c2)) {
-      const clusterCode = consonantTable[c2] || 7;
-      digits = `${clusterCode}${frontVowelCode}`;
-    } else {
-      const nextCode = consonantTable[c2] || vowelTable[c2] || 1;
-      digits = `${frontVowelCode}${nextCode}`;
-    }
-    nextExtraIndex = 3;
+    initialChar = targetChars[1] || 'ก';
+    const frontVowelCode = vowelTable[c0] || 5;
+    digitsArray.push(frontVowelCode);
+    startIndex = 2;
   } else {
     initialChar = c0;
+    startIndex = 1;
+  }
 
-    if (c1 === 'ฤ' || c1 === 'ฦ') {
-      const thirdCode = consonantTable[c2] || vowelTable[c2] || 8;
-      digits = `10${thirdCode}`;
-      nextExtraIndex = 3;
-    } else if (vowelTable[c1]) {
-      const vowelCode = vowelTable[c1];
-      const thirdCode = consonantTable[c2] || vowelTable[c2] || 1;
-      digits = `${vowelCode}${thirdCode}`;
-      nextExtraIndex = 3;
-    } else if (consonantTable[c1]) {
-      const c1Code = consonantTable[c1];
-      const c2Code = vowelTable[c2] || consonantTable[c2] || 1;
-      digits = `${c1Code}${c2Code}`;
-      nextExtraIndex = 3;
-    } else {
-      digits = '11';
-      nextExtraIndex = 2;
+  for (let i = startIndex; i < targetChars.length && digitsArray.length < 4; i++) {
+    const ch = targetChars[i];
+    if (ch === '์' || ch === '็' || ch === '่' || ch === '้' || ch === '๊' || ch === '๋') continue; // tone marks
+    const code = vowelTable[ch] !== undefined ? vowelTable[ch] : consonantTable[ch];
+    if (code !== undefined) {
+      digitsArray.push(code);
     }
   }
+
+  // Pad to 4 digits if needed
+  while (digitsArray.length < 4) {
+    if (digitsArray.length === 0) digitsArray.push(1);
+    else if (digitsArray.length === 1) digitsArray.push(1);
+    else if (digitsArray.length === 2) digitsArray.push(0);
+    else digitsArray.push(0);
+  }
+
+  const digits = digitsArray.slice(0, 4).join('');
 
   // Work mark (character from title)
   let cleanTitle = (title || '').replace(/^[0-9\s"“'‘\(\[\{]+/g, '').trim();
@@ -178,11 +170,11 @@ export function generateThaiCutter(author: string, title: string, existingCutter
   // inspect subsequent characters in author's name to add extra digits.
   if (existingCutters && existingCutters.size > 0 && existingCutters.has(candidate)) {
     let currDigits = digits;
-    let idx = nextExtraIndex;
+    let idx = startIndex + 3;
 
     while (existingCutters.has(`${initialChar}${currDigits}${titleInitial}`) && idx < targetChars.length) {
       const nextChar = targetChars[idx];
-      const nextCode = consonantTable[nextChar] || vowelTable[nextChar] || 1;
+      const nextCode = vowelTable[nextChar] !== undefined ? vowelTable[nextChar] : consonantTable[nextChar] || 1;
       currDigits += String(nextCode);
       idx++;
     }

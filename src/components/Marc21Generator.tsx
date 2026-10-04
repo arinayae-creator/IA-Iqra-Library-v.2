@@ -28,7 +28,8 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
-  Users
+  Users,
+  ClipboardPaste
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
@@ -739,6 +740,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
   const [statusMessage, setStatusMessage] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [editingRecord, setEditingRecord] = useState<Marc21Record | null>(null);
+  const [lastCopiedRow, setLastCopiedRow] = useState<Marc21Record | null>(null);
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<'selected' | Marc21Record | null>(null);
   const [startAccNum, setStartAccNum] = useState<number>(() => {
     try {
@@ -973,6 +975,102 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
     const set = new Set<string>(DEFAULT_STORAGE_LOCATIONS);
     records.forEach(r => {
       if (r.storage_location && r.storage_location !== '-') set.add(r.storage_location.trim());
+    });
+    return Array.from(set).filter(Boolean);
+  }, [records]);
+
+  // Dynamic suggestions for 700 translators / co-authors
+  const allAvailableTranslators700 = React.useMemo(() => {
+    const set = new Set<string>([
+      'จักรพงษ์ เมษพันธุ์, ผู้แปล.',
+      'กัญญารัตน์ จิราสวัสดิ์, ผู้แปล.',
+      'ภาสกร รัตนสุวรรณ, ผู้แปล.',
+      'สมชาย, ผู้แปล.',
+      'นพพร สุวรรณพานิช, ผู้แปล.',
+      'อารีนา แยนา, ผู้แปล.',
+      'ธนวดี บุญล้วน, ผู้แปล.',
+      'พิมพ์ใจ รัศมี, ผู้แปล.',
+      'ศิรินาถ ศิริรัตน์, ผู้แปล.',
+      'อรุณวรรณ บำรุงจิตต์, ผู้แปล.'
+    ]);
+    records.forEach(r => {
+      if (r.added_entry_700 && r.added_entry_700 !== '-') {
+        set.add(formatAddedEntry700(r.added_entry_700));
+      }
+    });
+    return Array.from(set).filter(Boolean);
+  }, [records]);
+
+  // Dynamic suggestions for publishers
+  const allAvailablePublishers = React.useMemo(() => {
+    const set = new Set<string>([
+      'นานมีบุ๊คส์',
+      'ซีเอ็ดยูเคชั่น',
+      'อมรินทร์พริ้นติ้ง แอนด์ พับลิชชิ่ง',
+      'มติชน',
+      'แจ่มใส',
+      'สถาพรบุ๊คส์',
+      'แสงดาว',
+      'สำนักพิมพ์จุฬาลงกรณ์มหาวิทยาลัย',
+      'มหาวิทยาลัยธรรมศาสตร์',
+      'สำนักพิมพ์ต้นคิด',
+      'สยามอินเตอร์คอมิกส์',
+      'เนชั่นบุ๊คส์',
+      'สกายบุ๊กส์',
+      'แปลน ฟอร์ คิดส์',
+      'กิเลน การพิมพ์',
+      'ซัคเซส มีเดีย',
+      'เอ็กซเปอร์เน็ท',
+      'ไอดีซี พรีเมียร์',
+      'สำนักพิมพ์เดียร์เดียร์'
+    ]);
+    records.forEach(r => {
+      if (r.publisher && r.publisher !== '-' && r.publisher !== 'ไม่ระบุสำนักพิมพ์') {
+        set.add(r.publisher.trim());
+      }
+    });
+    return Array.from(set).filter(Boolean);
+  }, [records]);
+
+  // Dynamic suggestions for publication places
+  const allAvailablePubPlaces = React.useMemo(() => {
+    const set = new Set<string>([
+      'กรุงเทพฯ',
+      'นนทบุรี',
+      'ปทุมธานี',
+      'เชียงใหม่',
+      'ขอนแก่น',
+      'สงขลา',
+      'ชลบุรี',
+      'นครราชสีมา',
+      'สมุทรปราการ',
+      'พิษณุโลก'
+    ]);
+    records.forEach(r => {
+      if (r.pub_place && r.pub_place !== '-') {
+        set.add(r.pub_place.trim());
+      }
+    });
+    return Array.from(set).filter(Boolean);
+  }, [records]);
+
+  // Dynamic suggestions for 490 Series
+  const allAvailableSeries490 = React.useMemo(() => {
+    const set = new Set<string>([
+      'การ์ตูนความรู้พัฒนาตนเอง ชุด Girl Power',
+      'ชุด เอาชีวิตรอด',
+      'ชุด ผจญภัยไร้พรมแดน',
+      'ชุด ล่าขุมทรัพย์สุดขอบฟ้า',
+      'ชุด ทำนายดวงชะตาราศี',
+      'ชุด ครอบครัวตึ๋งหนืด',
+      'ชุด พ่อรวยสอนลูก',
+      'ชุด วิทยาศาสตร์แสนสนุก',
+      'ชุด นิทานชาดก',
+      'ชุด วรรณกรรมเยาวชนระดับโลก'
+    ]);
+    records.forEach(r => {
+      if (r.series_490 && r.series_490 !== '-') set.add(r.series_490.trim());
+      if (r.series_uniform_830 && r.series_uniform_830 !== '-') set.add(r.series_uniform_830.trim());
     });
     return Array.from(set).filter(Boolean);
   }, [records]);
@@ -1688,12 +1786,80 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
 
   // Copy single row (From Column 1 to Column 3 EXTRA2)
   const handleCopyRow = (r: Marc21Record) => {
+    setLastCopiedRow(r);
     const tsv = recordToTsvRow(r);
     navigator.clipboard.writeText(tsv).then(() => {
-      showToast(`📋 คัดลอกแถว "${r.title_245a.substring(0, 30)}..." (คอลัมน์แรก - คอลัมน์3) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel`);
+      showToast(`📋 คัดลอกแถว "${r.title_245a.substring(0, 30)}..." (คอลัมน์แรก - คอลัมน์3) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel หรือกดไอคอนวาง`);
     }).catch(() => {
-      showToast('⚠️ ไม่สามารถคัดลอกลงคลิปบอร์ดได้ กรุณาลองใหม่อีกครั้ง');
+      showToast(`📋 คัดลอกแถว "${r.title_245a.substring(0, 30)}..." เรียบร้อย`);
     });
+  };
+
+  // Paste copied row data into target row
+  const handlePasteRow = async (targetRecordId: string) => {
+    let sourceData: Partial<Marc21Record> | null = lastCopiedRow ? { ...lastCopiedRow } : null;
+
+    // Try reading from clipboard if possible
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        const clipText = await navigator.clipboard.readText();
+        if (clipText && clipText.trim()) {
+          const parts = clipText.trim().split('\t');
+          if (parts.length >= 10) {
+            sourceData = {
+              date: parts[0] || '',
+              col1: parts[1] || '',
+              isbn: parts[3] || '',
+              author_personal: parts[4] || '',
+              author_corporate: parts[5] || '',
+              title_245a: parts[6] || '',
+              title_245b: parts[7] || '',
+              responsibility_245c: parts[8] || '',
+              ddc_082a: parts[9] || '',
+              cutter_082b: parts[10] || '',
+              pub_place: parts[11] || '',
+              publisher: parts[12] || '',
+              pub_year: parts[13] || '',
+              pages_300a: parts[14] || '',
+              illustration_300b: parts[15] || '',
+              subject_650a: parts[16] || '',
+              copies: parts[17] || '1',
+              summary_520: parts[18] || '',
+              edition_250: parts[19] || 'พิมพ์ครั้งที่ 1',
+              price_541: parts[20] || '',
+              series_490: parts[21] || '',
+              added_entry_700: parts[22] || '-',
+              acquisition_source: parts[23] || 'บริจาค',
+              col2: parts[24] || '',
+              source_type: parts[25] || '',
+              storage_location: parts[26] || 'สำหรับเด็ก',
+              status: parts[27] || 'มีอยู่',
+              col3: parts[28] || ''
+            };
+          }
+        }
+      }
+    } catch (err) {
+      // Fallback to lastCopiedRow
+    }
+
+    if (!sourceData) {
+      showToast('⚠️ ยังไม่มีข้อมูลที่คัดลอก กรุณากดไอคอนคัดลอกแถวก่อนวาง');
+      return;
+    }
+
+    setRecords(prev => prev.map(r => {
+      if (r.id !== targetRecordId) return r;
+      const updated: Marc21Record = {
+        ...r,
+        ...sourceData,
+        id: r.id, // Preserve original unique row ID
+        accession_no: r.accession_no // Preserve original accession number
+      };
+      return updated;
+    }));
+
+    showToast('📋 วางข้อมูลที่คัดลอกลงในแถวนี้เรียบร้อยแล้ว');
   };
 
   // Copy selected rows (From Column 1 to Column 3 EXTRA2)
@@ -2573,7 +2739,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                     className="rounded border-slate-600 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                   />
                 </th>
-                <th className="p-3 w-28 text-center bg-slate-900 sticky left-12 z-30">
+                <th className="p-3 w-36 text-center bg-slate-900 sticky left-12 z-30">
                   จัดการ
                 </th>
                 {MARC21_COLUMNS.map((col) => (
@@ -2635,10 +2801,17 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                           </button>
                           <button
                             onClick={() => handleCopyRow(r)}
-                            title="คัดลอกแถวนี้ (พร้อมวางใน Excel)"
+                            title="คัดลอกแถวนี้ (พร้อมวางใน Excel หรือกดวางในแถวอื่น)"
                             className="p-1 text-emerald-700 hover:text-emerald-900 hover:bg-emerald-100 rounded transition cursor-pointer"
                           >
                             <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => handlePasteRow(r.id)}
+                            title="วางข้อความ/ข้อมูลที่คัดลอกลงในแถวนี้ (Paste)"
+                            className="p-1 text-teal-600 hover:text-teal-900 hover:bg-teal-100 rounded transition cursor-pointer"
+                          >
+                            <ClipboardPaste className="w-3.5 h-3.5" />
                           </button>
                           <button
                             onClick={() => setEditingRecord(r)}
@@ -3054,21 +3227,34 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 <label className="block font-semibold text-slate-700 mb-1">700 ผู้แปล / ผู้แต่งร่วม (เช่น จักรพงษ์ เมษพันธุ์, ผู้แปล)</label>
                 <input
                   type="text"
+                  list="translators-700-options"
                   value={editingRecord.added_entry_700 || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, added_entry_700: formatAddedEntry700(e.target.value) })}
-                  placeholder="จักรพงษ์ เมษพันธุ์, ผู้แปล"
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium text-indigo-900"
+                  placeholder="พิมพ์หรือเลือกผู้แปล..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium text-indigo-900 focus:ring-2 focus:ring-indigo-500"
                 />
+                <datalist id="translators-700-options">
+                  {allAvailableTranslators700.map((item, idx) => (
+                    <option key={`dl_700_${idx}`} value={item} />
+                  ))}
+                </datalist>
               </div>
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">490 ชุด / ซีรีส์</label>
                 <input
                   type="text"
+                  list="series-490-options"
                   value={editingRecord.series_490 || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, series_490: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                  placeholder="พิมพ์หรือเลือกชุด/ซีรีส์..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
                 />
+                <datalist id="series-490-options">
+                  {allAvailableSeries490.map((item, idx) => (
+                    <option key={`dl_490_${idx}`} value={item} />
+                  ))}
+                </datalist>
               </div>
 
               <div>
@@ -3217,20 +3403,34 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 <label className="block font-semibold text-slate-700 mb-1">$b สำนักพิมพ์</label>
                 <input
                   type="text"
+                  list="publishers-options"
                   value={editingRecord.publisher}
                   onChange={(e) => setEditingRecord({ ...editingRecord, publisher: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                  placeholder="พิมพ์หรือเลือกสำนักพิมพ์..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 font-medium"
                 />
+                <datalist id="publishers-options">
+                  {allAvailablePublishers.map((item, idx) => (
+                    <option key={`dl_pub_${idx}`} value={item} />
+                  ))}
+                </datalist>
               </div>
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">$a สถานที่พิมพ์</label>
                 <input
                   type="text"
+                  list="pub-places-options"
                   value={editingRecord.pub_place}
                   onChange={(e) => setEditingRecord({ ...editingRecord, pub_place: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                  placeholder="พิมพ์หรือเลือกสถานที่พิมพ์..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
                 />
+                <datalist id="pub-places-options">
+                  {allAvailablePubPlaces.map((item, idx) => (
+                    <option key={`dl_place_${idx}`} value={item} />
+                  ))}
+                </datalist>
               </div>
 
               <div>
@@ -3784,9 +3984,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-emerald-600" />
-                  <span>ทดลองคำนวณเลขคัตเตอร์อัตโนมัติ (Live Tester)</span>
+                  <span>ทดลองคำนวณเลขคัตเตอร์อัตโนมัติ (สูตรมาตรฐาน 4 หลัก)</span>
                 </span>
-                <span className="text-[11px] text-emerald-700 font-medium">ผลลัพธ์คำนวณตามสูตรทันที</span>
+                <span className="text-[11px] text-emerald-700 font-medium">คำนวณเลข 4 หลักตามสูตรตารางเทียบทันที</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 items-end">
                 <div>
