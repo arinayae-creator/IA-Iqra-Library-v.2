@@ -3426,11 +3426,11 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                                   )}
                                 </span>
                                 <div>
-                                  <span className="font-extrabold text-slate-900 text-sm block">
+                                  <span className="font-normal text-slate-900 text-sm block">
                                     {item.authorName}
                                   </span>
                                   <div className="flex items-center gap-1.5 mt-0.5">
-                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-normal ${
                                       item.type === 'corporate'
                                         ? 'bg-amber-50 text-amber-800 border border-amber-200'
                                         : 'bg-blue-50 text-blue-800 border border-blue-200'
@@ -3438,7 +3438,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                                       {item.type === 'corporate' ? 'Tag 110 นิติบุคคล' : 'Tag 100 บุคคล'}
                                     </span>
                                     {item.source && (
-                                      <span className="text-[10px] text-slate-400 font-medium">
+                                      <span className="text-[10px] text-slate-400 font-normal">
                                         • {item.source}
                                       </span>
                                     )}
@@ -3448,7 +3448,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                             </td>
                             <td className="py-3 px-4 text-right">
                               <div className="flex items-center justify-end gap-2">
-                                <span className="font-mono font-black text-sm text-emerald-800 bg-emerald-50 px-3.5 py-1.5 rounded-xl border border-emerald-300 shadow-sm">
+                                <span className="font-mono font-normal text-sm text-emerald-800 bg-emerald-50 px-3.5 py-1.5 rounded-xl border border-emerald-300 shadow-sm">
                                   {item.authorCutter || '-'}
                                 </span>
                                 {item.authorCutter && item.authorCutter !== '-' && (
@@ -3469,7 +3469,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                                     showToast(`นำชื่อ "${item.authorName}" ไปทดสอบคำนวณคัตเตอร์เรียบร้อย`);
                                   }}
                                   title="นำไปทดสอบคำนวณร่วมกับชื่อเรื่องในแท็บคำนวณ"
-                                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-rose-100 hover:text-rose-800 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+                                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-rose-100 hover:text-rose-800 text-slate-700 font-normal rounded-xl text-xs transition cursor-pointer"
                                 >
                                   ทดสอบคำนวณ
                                 </button>
@@ -3561,45 +3561,45 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                   <div className="space-y-1.5">
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ก ข ค ฆ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ก ข ค ฆ</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">1</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ง จ ฉ ช ซ ฌ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ง จ ฉ ช ซ ฌ</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">2</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ญ ฎ ฏ ฐ ฑ ฒ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ญ ฎ ฏ ฐ ฑ ฒ</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">3</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ณ ด ต ถ ท ธ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ณ ด ต ถ ท ธ</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">4</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">น บ ป ผ ฝ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">น บ ป ผ ฝ</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">5</span>
                     </div>
                   </div>
                   <div className="space-y-1.5">
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">พ ฟ ภ ม ย</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">พ ฟ ภ ม ย</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">6</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ร ล ว</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ร ล ว</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">7</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ศ ษ ส</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ศ ษ ส</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">8</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ห ฬ อ ฮ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ห ฬ อ ฮ</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">9</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ฤ ฦ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ฤ ฦ</span>
                       <span className="font-bold text-rose-600 bg-rose-50 px-2 py-0.2 rounded">10</span>
                     </div>
                   </div>
@@ -3615,41 +3615,41 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                   <div className="space-y-1.5">
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">- ะ  ั  - ั ะ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">- ะ  ั  - ั ะ</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">1</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">า  ำ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">า  ำ</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">2</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ิ  ี  ึ  ื</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ิ  ี  ึ  ื</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">3</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ุ  ู</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ุ  ู</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">4</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">เ-  เ-ะ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">เ-  เ-ะ</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">5</span>
                     </div>
                   </div>
                   <div className="space-y-1.5">
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">เ-า  เ-าะ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">เ-า  เ-าะ</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">6</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">เ ีย  เ ียะ  เ ือ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">เ ีย  เ ียะ  เ ือ</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">7</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">แ-  แ-ะ  โ-  โ-ะ</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">แ-  แ-ะ  โ-  โ-ะ</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">8</span>
                     </div>
                     <div className="p-2 bg-white rounded-lg border border-slate-200 flex justify-between">
-                      <span className="font-sans font-bold text-slate-800">ใ-  ไ-</span>
+                      <span className="font-sans font-normal text-[16px] text-slate-800">ใ-  ไ-</span>
                       <span className="font-bold text-indigo-600 bg-indigo-50 px-2 py-0.2 rounded">9</span>
                     </div>
                   </div>

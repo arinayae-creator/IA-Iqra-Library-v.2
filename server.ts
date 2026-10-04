@@ -689,10 +689,7 @@ function healBookRecord(b: any): any {
 
   // 4. Heal Call Number if empty or null
   if (!healed.call_number || String(healed.call_number).trim() === '') {
-    const ddcVal = healed.ddc || '000';
-    const kw = String(healed.keywords || '').toLowerCase();
-    const cutMatch = kw.match(/หมวด\s*(\d+)/) || kw.match(/หมวด\s*([ก-ฮ])/);
-    healed.call_number = `${ddcVal} ${cutMatch ? cutMatch[0] : ''}`.trim();
+    healed.call_number = healed.ddc || '000';
   }
 
   // 5. Heal Category if empty or null
