@@ -42,7 +42,7 @@ import {
 import * as XLSX from 'xlsx';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { supabase } from '../supabaseClient';
-import { Marc21Generator, parseMarcSubfield } from './components/Marc21Generator';
+import { Marc21Generator, parseMarcSubfield, formatAccessionNo, extractVolumeFromTitle } from './components/Marc21Generator';
 import { generateThaiCutter } from './utils/thaiCutter';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
@@ -293,16 +293,20 @@ export default function App() {
       return clientAllBooksRef.current;
     }
     try {
-      const [r1, r2, r3] = await Promise.all([
-        supabase.from('books').select('*').range(0, 999),
-        supabase.from('books').select('*').range(1000, 1999),
-        supabase.from('books').select('*').range(2000, 2999)
-      ]);
-      const combined = [
-        ...(r1.data || []),
-        ...(r2.data || []),
-        ...(r3.data || [])
-      ].map(healBookRecord) as Book[];
+      let allBooks: any[] = [];
+      let page = 0;
+      const PAGE_SIZE = 1000;
+      while (page < 10) {
+        const { data, error } = await supabase
+          .from('books')
+          .select('*')
+          .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+        if (error || !data || data.length === 0) break;
+        allBooks = allBooks.concat(data);
+        if (data.length < PAGE_SIZE) break;
+        page++;
+      }
+      const combined = allBooks.map(healBookRecord) as Book[];
       if (combined.length > 0) {
         clientAllBooksRef.current = combined;
       }
@@ -1654,8 +1658,23 @@ export default function App() {
       } catch {}
 
       if (!createdViaApi) {
-        // Direct Supabase insert fallback
-        const { error: sbErr } = await supabase.from('books').upsert(bookToSave);
+        // Direct Supabase insert fallback with schema column validation
+        const validSupaCols = new Set([
+          'id', 'title', 'subtitle', 'author', 'co_authors', 'isbn', 'barcode', 'accession_no',
+          'publisher', 'publication_place', 'publication_year', 'edition', 'pages', 'language',
+          'category', 'subject', 'keywords', 'call_number', 'ddc', 'price', 'series',
+          'translator', 'illustration', 'cover_image', 'cover_source', 'description',
+          'status', 'source', 'created_at', 'updated_at'
+        ]);
+        const supaSave: any = {};
+        for (const [k, v] of Object.entries(bookToSave)) {
+          if (validSupaCols.has(k)) supaSave[k] = v;
+        }
+        const allSubs = [newBookForm.subject, newBookForm.subject_2, newBookForm.subject_3].filter(Boolean);
+        const comb = Array.from(new Set(allSubs.flatMap((s: any) => String(s).split(/[,;\n]+/)).map((s: string) => s.trim()))).filter((s: string) => s && s !== '-' && s !== 'ทั่วไป').join(' ; ');
+        if (comb) supaSave.subject = comb;
+
+        const { error: sbErr } = await supabase.from('books').upsert(supaSave);
         if (sbErr) {
           console.error('[Supabase Direct] Insert error:', sbErr.message);
         } else {
@@ -1664,6 +1683,7 @@ export default function App() {
       }
 
       if (createdViaApi) {
+        clientAllBooksRef.current = [];
         fetchBooks();
         setIsAddingBook(false);
         // Reset form
@@ -1711,8 +1731,23 @@ export default function App() {
       } catch {}
 
       if (!updatedViaApi) {
-        // Direct Supabase update fallback
-        const { error: sbErr } = await supabase.from('books').update(updatedPayload).eq('id', editingBook.id);
+        // Direct Supabase update fallback with schema column validation
+        const validSupaCols = new Set([
+          'id', 'title', 'subtitle', 'author', 'co_authors', 'isbn', 'barcode', 'accession_no',
+          'publisher', 'publication_place', 'publication_year', 'edition', 'pages', 'language',
+          'category', 'subject', 'keywords', 'call_number', 'ddc', 'price', 'series',
+          'translator', 'illustration', 'cover_image', 'cover_source', 'description',
+          'status', 'source', 'updated_at'
+        ]);
+        const supaUpdate: any = {};
+        for (const [k, v] of Object.entries(updatedPayload)) {
+          if (validSupaCols.has(k)) supaUpdate[k] = v;
+        }
+        const allSubs = [editingBook.subject, editingBook.subject_2, editingBook.subject_3].filter(Boolean);
+        const comb = Array.from(new Set(allSubs.flatMap((s: any) => String(s).split(/[,;\n]+/)).map((s: string) => s.trim()))).filter((s: string) => s && s !== '-' && s !== 'ทั่วไป').join(' ; ');
+        if (comb) supaUpdate.subject = comb;
+
+        const { error: sbErr } = await supabase.from('books').update(supaUpdate).eq('id', editingBook.id);
         if (!sbErr) {
           await supabase.from('book_customizations').upsert({
             id: editingBook.id,
@@ -1728,6 +1763,7 @@ export default function App() {
       }
 
       if (updatedViaApi) {
+        clientAllBooksRef.current = [];
         fetchBooks();
         setEditingBook(null);
         alert('✨ บันทึกการแก้ไขข้อมูลหนังสือลงฐานข้อมูล Supabase สำเร็จเรียบร้อยแล้ว!');
@@ -3837,7 +3873,9 @@ export default function App() {
         {/* TAB 3: MARC 21 GENERATOR */}
         {activeTab === 'marc21' && (
           <Marc21Generator
+            libraryBooks={books}
             onBookAddedToLibrary={() => {
+              clientAllBooksRef.current = [];
               fetchBooks(currentPage);
             }}
             openBarcodeScanner={() => {
@@ -4905,6 +4943,150 @@ export default function App() {
                       </div>
                     </div>
                   </div>
+
+                  {/* กรอบสำหรับแสดงข้อมูลทะเบียนหนังสือ (ก่อนบัตรรายการข้อมูลบรรณานุกรม) */}
+                  {(() => {
+                    const rawAcc = selectedBookDetail.accession_no || selectedBookDetail.barcode || selectedBookDetail.id;
+                    const displayAccNo = formatAccessionNo(rawAcc);
+                    const callNumber = selectedBookDetail.call_number || `${selectedBookDetail.ddc || ''} ${selectedBookDetail.call_sub || ''}`.trim() || '-';
+                    const displayYear = selectedBookDetail.publication_year || '-';
+                    const detectedVol = extractVolumeFromTitle(
+                      selectedBookDetail.title,
+                      selectedBookDetail.subtitle,
+                      selectedBookDetail.edition
+                    );
+                    const displayVolume = detectedVol !== '-' ? detectedVol : '1';
+
+                    // Compute copy number for selectedBookDetail
+                    const targetIsbn = (selectedBookDetail.isbn || '').replace(/[^0-9X]/gi, '');
+                    const targetTitle = (selectedBookDetail.title || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
+                    const getAccNum = (acc?: string): number => {
+                      if (!acc) return 0;
+                      const digits = acc.replace(/[^0-9]/g, '');
+                      return digits ? parseInt(digits, 10) : 0;
+                    };
+
+                    const copyMap = new Map<string, { id: string; accNo: string; num: number }>();
+                    books.forEach(b => {
+                      let match = false;
+                      const bIsbn = (b.isbn || '').replace(/[^0-9X]/gi, '');
+                      const bTitle = (b.title || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
+
+                      if (targetIsbn && targetIsbn.length >= 8 && bIsbn) {
+                        match = (bIsbn === targetIsbn || bIsbn.includes(targetIsbn) || targetIsbn.includes(bIsbn));
+                      } else if (targetTitle && targetTitle.length > 2 && bTitle) {
+                        match = (bTitle === targetTitle);
+                      }
+
+                      if (match || b.id === selectedBookDetail.id) {
+                        const acc = b.accession_no || b.barcode || b.id || '';
+                        copyMap.set(acc || b.id, {
+                          id: b.id,
+                          accNo: acc,
+                          num: getAccNum(acc)
+                        });
+                      }
+                    });
+
+                    const currKey = rawAcc || selectedBookDetail.id;
+                    if (!copyMap.has(currKey)) {
+                      copyMap.set(currKey, {
+                        id: selectedBookDetail.id,
+                        accNo: rawAcc || '',
+                        num: getAccNum(rawAcc)
+                      });
+                    }
+
+                    const sortedCopies = Array.from(copyMap.values()).sort((a, b) => {
+                      if (a.num !== b.num) return a.num - b.num;
+                      return (a.accNo || '').localeCompare(b.accNo || '');
+                    });
+
+                    const currNum = getAccNum(rawAcc);
+                    const foundIdx = sortedCopies.findIndex(c => c.id === selectedBookDetail.id || c.accNo === rawAcc || (currNum > 0 && c.num === currNum));
+                    const copyNumber = foundIdx >= 0 ? foundIdx + 1 : 1;
+                    const totalCopies = Math.max(sortedCopies.length, 1);
+
+                    return (
+                      <div className="bg-gradient-to-r from-amber-50/80 via-white to-amber-50/40 border-2 border-amber-300/80 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
+                        <div className="flex items-center justify-between border-b border-amber-200/80 pb-2.5">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-700 flex items-center justify-center font-bold">
+                              <Barcode className="w-4 h-4" />
+                            </div>
+                            <div>
+                              <h4 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                                <span>ข้อมูลทะเบียนหนังสือ</span>
+                                <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300">
+                                  Book Accession & Copy Info
+                                </span>
+                              </h4>
+                              <p className="text-[11px] text-slate-500">ข้อมูลการลงทะเบียนและลำดับฉบับของหนังสือในระบบห้องสมุด</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono font-bold bg-white text-amber-900 border border-amber-300 px-3 py-1 rounded-lg shadow-2xs">
+                              {displayAccNo}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
+                          {/* 1. เลขทะเบียน */}
+                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                            <span className="text-[11px] font-bold text-slate-500 mb-1">เลขทะเบียน :</span>
+                            <span className="text-xs sm:text-sm font-mono font-extrabold text-slate-900 truncate" title={displayAccNo}>
+                              {displayAccNo}
+                            </span>
+                          </div>
+
+                          {/* 2. เลขเรียกหนังสือ */}
+                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                            <span className="text-[11px] font-bold text-slate-500 mb-1">เลขเรียกหนังสือ :</span>
+                            <span className="text-xs sm:text-sm font-mono font-extrabold text-indigo-700 truncate" title={callNumber}>
+                              {callNumber}
+                            </span>
+                          </div>
+
+                          {/* 3. ปีที่พิมพ์ */}
+                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                            <span className="text-[11px] font-bold text-slate-500 mb-1">ปีที่พิมพ์ :</span>
+                            <span className="text-xs sm:text-sm font-mono font-extrabold text-slate-800">
+                              {displayYear}
+                            </span>
+                          </div>
+
+                          {/* 4. เล่ม */}
+                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-[11px] font-bold text-slate-500">เล่ม :</span>
+                              {detectedVol !== '-' && (
+                                <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 py-0.2 rounded font-bold">จากชื่อเรื่อง</span>
+                              )}
+                            </div>
+                            <span className="text-xs sm:text-sm font-extrabold text-slate-900">
+                              {displayVolume}
+                            </span>
+                          </div>
+
+                          {/* 5. ฉบับ */}
+                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between col-span-2 sm:col-span-1">
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-[11px] font-bold text-slate-500">ฉบับ :</span>
+                              {totalCopies > 1 && (
+                                <span className="text-[9px] bg-blue-100 text-blue-800 px-1 py-0.2 rounded font-bold">
+                                  {copyNumber}/{totalCopies}
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs sm:text-sm font-extrabold text-blue-700">
+                              {copyNumber}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* OPAC Bibliographic Card View matching Image 2 */}
                   <div className="space-y-2 pt-2">

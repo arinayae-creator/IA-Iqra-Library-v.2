@@ -2160,7 +2160,32 @@ app.post('/api/books', async (req, res) => {
 
     // Background Supabase update
     try {
-      await supabase.from('books').upsert(data, { onConflict: 'id' });
+      const validSupaCols = new Set([
+        'id', 'title', 'subtitle', 'author', 'co_authors', 'isbn', 'barcode', 'accession_no',
+        'publisher', 'publication_place', 'publication_year', 'edition', 'pages', 'language',
+        'category', 'subject', 'keywords', 'call_number', 'ddc', 'price', 'series',
+        'translator', 'illustration', 'cover_image', 'cover_source', 'description',
+        'status', 'source', 'created_at', 'updated_at'
+      ]);
+      const supaData: any = {};
+      for (const [k, v] of Object.entries(data)) {
+        if (validSupaCols.has(k)) {
+          supaData[k] = v;
+        }
+      }
+      if (data.subject_2 || data.subject_3 || data.all650Subjects) {
+        const subs = [
+          data.subject,
+          data.subject_2,
+          data.subject_3,
+          ...(Array.isArray(data.all650Subjects) ? data.all650Subjects : [])
+        ].filter(Boolean);
+        const unique = Array.from(new Set(subs.flatMap((s: any) => String(s).split(/[,;\n]+/)).map((s: string) => s.trim()))).filter((s: string) => s && s !== '-' && s !== 'ทั่วไป');
+        if (unique.length > 0) {
+          supaData.subject = unique.join(' ; ');
+        }
+      }
+      await supabase.from('books').upsert(supaData, { onConflict: 'id' });
 
       // Also write to book_customizations for fast cross-device sync
       await supabase.from('book_customizations').upsert({
@@ -2314,7 +2339,23 @@ app.put('/api/books/:id', async (req, res) => {
       if (updatedBook.edition !== undefined) supaUpdatePayload.edition = updatedBook.edition;
       if (updatedBook.pages !== undefined) supaUpdatePayload.pages = updatedBook.pages;
       if (updatedBook.category !== undefined) supaUpdatePayload.category = updatedBook.category;
-      if (updatedBook.subject !== undefined) supaUpdatePayload.subject = updatedBook.subject;
+      if (updatedBook.subject_2 || updatedBook.subject_3 || updatedBook.all650Subjects) {
+        const subs = [
+          updatedBook.subject,
+          updatedBook.subject_2,
+          updatedBook.subject_3,
+          ...(Array.isArray(updatedBook.all650Subjects) ? updatedBook.all650Subjects : [])
+        ].filter(Boolean);
+        const unique = Array.from(new Set(subs.flatMap((s: any) => String(s).split(/[,;\n]+/)).map((s: string) => s.trim()))).filter((s: string) => s && s !== '-' && s !== 'ทั่วไป');
+        if (unique.length > 0) {
+          supaUpdatePayload.subject = unique.join(' ; ');
+          updatedBook.subject = supaUpdatePayload.subject;
+        } else if (updatedBook.subject !== undefined) {
+          supaUpdatePayload.subject = updatedBook.subject;
+        }
+      } else if (updatedBook.subject !== undefined) {
+        supaUpdatePayload.subject = updatedBook.subject;
+      }
       if (updatedBook.keywords !== undefined) supaUpdatePayload.keywords = updatedBook.keywords;
       if (updatedBook.call_number !== undefined) supaUpdatePayload.call_number = updatedBook.call_number;
       if (updatedBook.ddc !== undefined) supaUpdatePayload.ddc = updatedBook.ddc;

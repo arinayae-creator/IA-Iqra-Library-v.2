@@ -671,7 +671,149 @@ export const formatCleanMarc245Title = (rawA: string, rawB: string, raw246: stri
   return { formatted245a, formatted245b };
 };
 
+export function formatAccessionNo(acc?: string): string {
+  if (!acc || acc === '-' || acc.trim() === '') return '-';
+  const clean = acc.trim();
+  if (/^b[0-9]+/i.test(clean)) {
+    const num = clean.slice(1);
+    return `B${num.padStart(10, '0')}`;
+  }
+  if (/^[0-9]+$/.test(clean)) {
+    return `B${clean.padStart(10, '0')}`;
+  }
+  return clean;
+}
+
+export function extractVolumeFromTitle(title?: string, subtitle?: string, extra?: string): string {
+  const fullText = `${title || ''} ${subtitle || ''} ${extra || ''}`.trim();
+  if (!fullText) return '-';
+
+  const thaiToArabic: Record<string, string> = {
+    '๐': '0', '๑': '1', '๒': '2', '๓': '3', '๔': '4',
+    '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9'
+  };
+  const normalized = fullText.replace(/[๐-๙]/g, d => thaiToArabic[d] || d);
+
+  const patterns = [
+    /(?:เล่มที่|เล่ม\s*ที่|เล่ม|ล\.)\s*([0-9]+)/i,
+    /(?:ฉบับที่)\s*([0-9]+)/i,
+    /(?:vol(?:ume)?\.?|v\.)\s*([0-9]+)/i,
+    /(?:part|pt\.)\s*([0-9]+)/i,
+    /(?:ภาคที่|ภาค|ตอนที่|ตอน)\s*([0-9]+)/i,
+    /(?:book|bk\.)\s*([0-9]+)/i
+  ];
+
+  for (const regex of patterns) {
+    const match = normalized.match(regex);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+
+  return '-';
+}
+
+export function calculateCopyNumber(
+  record: Marc21Record,
+  allRecords: Marc21Record[],
+  libraryBooks: any[] = []
+): { copyNumber: number; totalCopies: number } {
+  if (!record) return { copyNumber: 1, totalCopies: 1 };
+
+  const targetIsbn = (record.isbn || '').replace(/[^0-9X]/gi, '');
+  const targetIssn = (record.issn_022 || '').replace(/[^0-9X]/gi, '');
+  const targetTitle = (record.title_245a || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
+
+  const getAccNum = (acc?: string): number => {
+    if (!acc) return 0;
+    const digits = acc.replace(/[^0-9]/g, '');
+    return digits ? parseInt(digits, 10) : 0;
+  };
+
+  const copyMap = new Map<string, { id: string; accNo: string; num: number }>();
+
+  // Add all matching items from allRecords
+  allRecords.forEach(r => {
+    let match = false;
+    const rIsbn = (r.isbn || '').replace(/[^0-9X]/gi, '');
+    const rIssn = (r.issn_022 || '').replace(/[^0-9X]/gi, '');
+    const rTitle = (r.title_245a || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
+
+    if (targetIsbn && targetIsbn.length >= 8 && rIsbn) {
+      match = (rIsbn === targetIsbn || rIsbn.includes(targetIsbn) || targetIsbn.includes(rIsbn));
+    } else if (targetIssn && targetIssn.length >= 7 && rIssn) {
+      match = (rIssn === targetIssn);
+    } else if (targetTitle && targetTitle.length > 2 && rTitle) {
+      match = (rTitle === targetTitle);
+    }
+
+    if (match || r.id === record.id) {
+      const key = r.accession_no || r.id;
+      copyMap.set(key, {
+        id: r.id,
+        accNo: r.accession_no,
+        num: getAccNum(r.accession_no)
+      });
+    }
+  });
+
+  // Add matching items from libraryBooks (if provided)
+  if (Array.isArray(libraryBooks)) {
+    libraryBooks.forEach(b => {
+      let match = false;
+      const bIsbn = (b.isbn || '').replace(/[^0-9X]/gi, '');
+      const bIssn = (b.issn || b.issn_022 || '').replace(/[^0-9X]/gi, '');
+      const bTitle = (b.title || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
+
+      if (targetIsbn && targetIsbn.length >= 8 && bIsbn) {
+        match = (bIsbn === targetIsbn || bIsbn.includes(targetIsbn) || targetIsbn.includes(bIsbn));
+      } else if (targetIssn && targetIssn.length >= 7 && bIssn) {
+        match = (bIssn === targetIssn);
+      } else if (targetTitle && targetTitle.length > 2 && bTitle) {
+        match = (bTitle === targetTitle);
+      }
+
+      if (match) {
+        const acc = b.accession_no || b.barcode || b.id || '';
+        const key = acc || b.id;
+        if (!copyMap.has(key)) {
+          copyMap.set(key, {
+            id: b.id,
+            accNo: acc,
+            num: getAccNum(acc)
+          });
+        }
+      }
+    });
+  }
+
+  // Ensure current record is definitely included
+  const currKey = record.accession_no || record.id;
+  if (!copyMap.has(currKey)) {
+    copyMap.set(currKey, {
+      id: record.id,
+      accNo: record.accession_no,
+      num: getAccNum(record.accession_no)
+    });
+  }
+
+  // Sort copies by accession number ascending
+  const sortedCopies = Array.from(copyMap.values()).sort((a, b) => {
+    if (a.num !== b.num) return a.num - b.num;
+    return (a.accNo || '').localeCompare(b.accNo || '');
+  });
+
+  const currNum = getAccNum(record.accession_no);
+  const foundIdx = sortedCopies.findIndex(c => c.id === record.id || c.accNo === record.accession_no || (currNum > 0 && c.num === currNum));
+
+  const copyNumber = foundIdx >= 0 ? foundIdx + 1 : 1;
+  const totalCopies = Math.max(sortedCopies.length, 1);
+
+  return { copyNumber, totalCopies };
+}
+
 interface Marc21GeneratorProps {
+  libraryBooks?: any[];
   onBookAddedToLibrary?: () => void;
   openBarcodeScanner?: () => void;
 }
@@ -794,7 +936,7 @@ export const DEFAULT_SUBJECT_HEADINGS = [
   'การแก้ปัญหาในเด็ก.'
 ];
 
-export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToLibrary }) => {
+export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks = [], onBookAddedToLibrary }) => {
   const [records, setRecords] = useState<Marc21Record[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
@@ -807,6 +949,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
   const [statusMessage, setStatusMessage] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [editingRecord, setEditingRecord] = useState<Marc21Record | null>(null);
+  const [editModalTab, setEditModalTab] = useState<'card' | 'fields'>('card');
+  const [copiedCardInModal, setCopiedCardInModal] = useState<boolean>(false);
   const [isFetchingAiCover, setIsFetchingAiCover] = useState(false);
   const [lastCopiedRow, setLastCopiedRow] = useState<Marc21Record | null>(null);
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<'selected' | Marc21Record | null>(null);
@@ -1905,6 +2049,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
       subject_uniform_630: item.subject_uniform_630 || '-',
       subject_geo_651: item.subject_geo_651 || '-',
       subject_650_2: item.subject_650_2 || '-',
+      subject_650_3: item.subject_650_3 || '-',
       added_corp_710: item.added_corp_710 || '-',
       added_title_740: item.added_title_740 || '-',
       series_uniform_830: item.series_uniform_830 || item.series || item.series_490 || '-',
@@ -1975,22 +2120,42 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
 
   // Open edit modal with all 3 650 subjects extracted from record or marc_tags
   const handleStartEdit = (r: Marc21Record) => {
-    const marc650s: string[] = [];
+    const extractedSubs: string[] = [];
+    const addSub = (val?: string) => {
+      if (!val || typeof val !== 'string') return;
+      let clean = val.trim();
+      if (clean.startsWith('$a') || clean.startsWith('\\a')) {
+        clean = clean.substring(2).trim();
+      }
+      clean = clean.replace(/[\u001f\$][a-z0-9]/g, ' ').replace(/^[\s\/:;=,-]+/, '').replace(/[\s\/:;=,-]+$/, '').trim();
+      if (clean && clean !== '-' && clean !== 'ทั่วไป' && !extractedSubs.includes(clean)) {
+        extractedSubs.push(clean);
+      }
+    };
+
     if (Array.isArray(r.marc_tags)) {
       r.marc_tags.forEach((t: any) => {
         if (t && (t.tagID === '650' || t.tag === '650')) {
           const parsed = parseMarcSubfield(t.data || t.content || '', 'a') || (t.data || t.content || '').replace(/[\u001f\$][a-z0-9]/g, ' ').trim();
-          if (parsed && parsed !== '-' && parsed !== 'ทั่วไป' && !marc650s.includes(parsed)) {
-            marc650s.push(parsed);
-          }
+          addSub(parsed);
         }
       });
     }
 
-    const s1 = (r.subject_650a && r.subject_650a !== '-' && r.subject_650a !== 'ทั่วไป') ? r.subject_650a : (marc650s[0] || r.subject_650a || '');
-    const s2 = (r.subject_650_2 && r.subject_650_2 !== '-') ? r.subject_650_2 : (marc650s[1] || '');
-    const s3 = (r.subject_650_3 && r.subject_650_3 !== '-') ? r.subject_650_3 : (marc650s[2] || '');
+    if (r.subject_650a) {
+      r.subject_650a.split(/[,;\n]+/).forEach(s => addSub(s));
+    }
+    if ((r as any).subject) {
+      String((r as any).subject).split(/[,;\n]+/).forEach(s => addSub(s));
+    }
+    addSub(r.subject_650_2);
+    addSub(r.subject_650_3);
 
+    const s1 = extractedSubs[0] || (r.subject_650a && r.subject_650a !== '-' ? r.subject_650a : '') || '';
+    const s2 = extractedSubs[1] || (r.subject_650_2 && r.subject_650_2 !== '-' ? r.subject_650_2 : '') || '';
+    const s3 = extractedSubs[2] || (r.subject_650_3 && r.subject_650_3 !== '-' ? r.subject_650_3 : '') || '';
+
+    setEditModalTab('card');
     setEditingRecord({
       ...r,
       subject_650a: s1,
@@ -2130,6 +2295,35 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
 
     r.db_id = targetBookId;
 
+    // Extract all subject headings across 650 fields and marc_tags
+    const all650s: string[] = [];
+    const addS = (val?: string) => {
+      if (!val || typeof val !== 'string') return;
+      let clean = val.trim();
+      if (clean.startsWith('$a') || clean.startsWith('\\a')) clean = clean.substring(2).trim();
+      clean = clean.replace(/[\u001f\$][a-z0-9]/g, ' ').replace(/^[\s\/:;=,-]+/, '').replace(/[\s\/:;=,-]+$/, '').trim();
+      if (clean && clean !== '-' && clean !== 'ทั่วไป' && !all650s.includes(clean)) {
+        all650s.push(clean);
+      }
+    };
+    if (r.subject_650a) r.subject_650a.split(/[,;\n]+/).forEach(addS);
+    if ((r as any).subject) String((r as any).subject).split(/[,;\n]+/).forEach(addS);
+    addS(r.subject_650_2);
+    addS(r.subject_650_3);
+    if (Array.isArray(r.marc_tags)) {
+      r.marc_tags.forEach((t: any) => {
+        if (t && (t.tagID === '650' || t.tag === '650')) {
+          const parsed = parseMarcSubfield(t.data || t.content || '', 'a') || (t.data || t.content || '').replace(/[\u001f\$][a-z0-9]/g, ' ').trim();
+          addS(parsed);
+        }
+      });
+    }
+
+    const combinedSubject = all650s.length > 0 ? all650s.join(' ; ') : (r.subject_650a || 'ทั่วไป');
+    const s1 = all650s[0] || (r.subject_650a && r.subject_650a !== '-' ? r.subject_650a : '') || '';
+    const s2 = all650s[1] || (r.subject_650_2 && r.subject_650_2 !== '-' ? r.subject_650_2 : '') || '';
+    const s3 = all650s[2] || (r.subject_650_3 && r.subject_650_3 !== '-' ? r.subject_650_3 : '') || '';
+
     const payload = {
       id: targetBookId,
       title: cleanTitle,
@@ -2145,13 +2339,13 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
       ddc: r.ddc_082a,
       call_number: `${r.ddc_082a} ${r.cutter_082b}`.trim(),
       category: r.storage_location || r.subject_650a || 'ทั่วไป',
-      subject: r.subject_650a || '',
-      subject_2: (r.subject_650_2 && r.subject_650_2 !== '-') ? r.subject_650_2 : '',
-      subject_3: (r.subject_650_3 && r.subject_650_3 !== '-') ? r.subject_650_3 : '',
-      subject_650a: r.subject_650a || '',
-      subject_650_2: (r.subject_650_2 && r.subject_650_2 !== '-') ? r.subject_650_2 : '',
-      subject_650_3: (r.subject_650_3 && r.subject_650_3 !== '-') ? r.subject_650_3 : '',
-      all650Subjects: [r.subject_650a, r.subject_650_2, r.subject_650_3].filter(s => Boolean(s && s !== '-' && s !== 'ทั่วไป')),
+      subject: combinedSubject,
+      subject_2: s2,
+      subject_3: s3,
+      subject_650a: s1,
+      subject_650_2: s2,
+      subject_650_3: s3,
+      all650Subjects: all650s,
       marc_tags: r.marc_tags || [],
       cover_image: r.cover_image || (r.electronic_856 && r.electronic_856.startsWith('http') ? r.electronic_856 : ''),
       dimensions_300c: r.dimensions_300c || '',
@@ -2165,6 +2359,35 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
       translator: r.added_entry_700 !== '-' ? r.added_entry_700 : '',
       illustration: r.illustration_300b,
       updated_at: new Date().toISOString()
+    };
+
+    // Clean payload strictly matching Supabase table columns so upsert NEVER fails
+    const supabasePayload = {
+      id: targetBookId,
+      title: cleanTitle,
+      subtitle: r.title_245b || null,
+      author: cleanAuthor,
+      isbn: cleanIsbn || null,
+      barcode: r.accession_no || null,
+      accession_no: r.accession_no || null,
+      publisher: r.publisher || null,
+      publication_place: r.pub_place || null,
+      publication_year: r.pub_year || null,
+      pages: r.pages_300a || null,
+      ddc: r.ddc_082a || null,
+      call_number: `${r.ddc_082a || ''} ${r.cutter_082b || ''}`.trim() || null,
+      category: r.storage_location || r.subject_650a || 'ทั่วไป',
+      subject: combinedSubject,
+      keywords: [cleanTitle, cleanAuthor, ...all650s, r.publisher].filter(Boolean).join(', '),
+      description: r.summary_520 || null,
+      status: r.status || 'พร้อมให้บริการ',
+      edition: r.edition_250 || null,
+      price: r.price_541 || null,
+      series: r.series_490 || null,
+      translator: (r.added_entry_700 && r.added_entry_700 !== '-') ? r.added_entry_700 : null,
+      illustration: r.illustration_300b || null,
+      cover_image: r.cover_image || (r.electronic_856 && r.electronic_856.startsWith('http') ? r.electronic_856 : null),
+      updated_at: payload.updated_at
     };
 
     // 2. Clean up any existing duplicate rows in Supabase with the same title but different ID (e.g. old accession_no IDs)
@@ -2186,8 +2409,15 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
       console.warn('Deduplication cleanup note:', e);
     }
 
-    // 3. Upsert the payload into Supabase
-    await supabase.from('books').upsert(payload, { onConflict: 'id' });
+    // 3. Upsert clean payload into Supabase
+    try {
+      const { error: sbErr } = await supabase.from('books').upsert(supabasePayload, { onConflict: 'id' });
+      if (sbErr) {
+        console.warn('[Supabase Sync] Note:', sbErr.message);
+      }
+    } catch (sbEx) {
+      console.warn('[Supabase Sync] Upsert exception:', sbEx);
+    }
 
     // 4. ALSO POST to Express Server API so it instantly updates server cache and broadcasts real-time
     try {
@@ -3422,6 +3652,260 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
               </button>
             </div>
 
+            {/* TABS: ข้อมูลหนังสือแบบเดิม (บัตรรายการ) มาอยู่อันแรก vs ฟอร์ม MARC 21 */}
+            <div className="flex items-center gap-2 border-b border-slate-200">
+              <button
+                type="button"
+                onClick={() => setEditModalTab('card')}
+                className={`px-4 py-2 text-xs font-bold rounded-t-xl transition flex items-center gap-1.5 cursor-pointer ${
+                  editModalTab === 'card'
+                    ? 'bg-white text-slate-900 border-t border-x border-slate-200 shadow-xs -mb-px'
+                    : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5 text-amber-600" />
+                <span>ข้อมูลหนังสือแบบเดิม (บัตรรายการ)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditModalTab('fields')}
+                className={`px-4 py-2 text-xs font-bold rounded-t-xl transition flex items-center gap-1.5 cursor-pointer ${
+                  editModalTab === 'fields'
+                    ? 'bg-white text-slate-900 border-t border-x border-slate-200 shadow-xs -mb-px'
+                    : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
+                }`}
+              >
+                <Database className="w-3.5 h-3.5 text-indigo-600" />
+                <span>ฟอร์มแก้ไข MARC 21 (ข้อมูลแท็ก)</span>
+              </button>
+            </div>
+
+            {/* TAB 1: ข้อมูลหนังสือแบบเดิม (บัตรรายการ) */}
+            {editModalTab === 'card' && (() => {
+              const displayAccNo = formatAccessionNo(editingRecord.accession_no);
+              const callNumber = `${editingRecord.ddc_082a || ''} ${editingRecord.cutter_082b || ''}`.trim() || '-';
+              const displayYear = editingRecord.pub_year || '-';
+              const detectedVol = extractVolumeFromTitle(
+                editingRecord.title_245a,
+                editingRecord.title_245b,
+                `${editingRecord.edition_250 || ''} ${editingRecord.series_490 || ''}`
+              );
+              const displayVolume = detectedVol !== '-' ? detectedVol : '1';
+              const copyInfo = calculateCopyNumber(editingRecord, records, libraryBooks);
+
+              return (
+                <div className="space-y-4 animate-fade-in text-xs sm:text-sm">
+                  {/* กรอบสำหรับแสดงข้อมูลทะเบียนหนังสือ (ก่อนบัตรรายการข้อมูลบรรณานุกรม) */}
+                  <div className="bg-gradient-to-r from-amber-50/80 via-white to-amber-50/40 border-2 border-amber-300/80 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
+                    <div className="flex items-center justify-between border-b border-amber-200/80 pb-2.5">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-700 flex items-center justify-center font-bold">
+                          <Barcode className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                            <span>ข้อมูลทะเบียนหนังสือ</span>
+                            <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300">
+                              Book Accession & Copy Info
+                            </span>
+                          </h4>
+                          <p className="text-[11px] text-slate-500">ข้อมูลการลงทะเบียนและลำดับฉบับของหนังสือในระบบห้องสมุด</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono font-bold bg-white text-amber-900 border border-amber-300 px-3 py-1 rounded-lg shadow-2xs">
+                          {displayAccNo}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
+                      {/* 1. เลขทะเบียน */}
+                      <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 mb-1">เลขทะเบียน :</span>
+                        <span className="text-xs sm:text-sm font-mono font-extrabold text-slate-900 truncate" title={displayAccNo}>
+                          {displayAccNo}
+                        </span>
+                      </div>
+
+                      {/* 2. เลขเรียกหนังสือ */}
+                      <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 mb-1">เลขเรียกหนังสือ :</span>
+                        <span className="text-xs sm:text-sm font-mono font-extrabold text-indigo-700 truncate" title={callNumber}>
+                          {callNumber}
+                        </span>
+                      </div>
+
+                      {/* 3. ปีที่พิมพ์ */}
+                      <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                        <span className="text-[11px] font-bold text-slate-500 mb-1">ปีที่พิมพ์ :</span>
+                        <span className="text-xs sm:text-sm font-mono font-extrabold text-slate-800">
+                          {displayYear}
+                        </span>
+                      </div>
+
+                      {/* 4. เล่ม */}
+                      <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[11px] font-bold text-slate-500">เล่ม :</span>
+                          {detectedVol !== '-' && (
+                            <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 py-0.2 rounded font-bold">จากชื่อเรื่อง</span>
+                          )}
+                        </div>
+                        <span className="text-xs sm:text-sm font-extrabold text-slate-900">
+                          {displayVolume}
+                        </span>
+                      </div>
+
+                      {/* 5. ฉบับ */}
+                      <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between col-span-2 sm:col-span-1">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[11px] font-bold text-slate-500">ฉบับ :</span>
+                          {copyInfo.totalCopies > 1 && (
+                            <span className="text-[9px] bg-blue-100 text-blue-800 px-1 py-0.2 rounded font-bold">
+                              {copyInfo.copyNumber}/{copyInfo.totalCopies}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs sm:text-sm font-extrabold text-blue-700">
+                          {copyInfo.copyNumber}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                      <FileText className="h-4 w-4 text-amber-600" />
+                      <span>บัตรรายการข้อมูลบรรณานุกรม (Bibliographic Record)</span>
+                    </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const allSubs: string[] = [];
+                      const addS = (val?: string) => {
+                        if (!val) return;
+                        const clean = val.replace(/[\u001f\$][a-z0-9]/g, ' ').replace(/^[\s\/:;=,-]+/, '').replace(/[\s\/:;=,-]+$/, '').trim();
+                        if (clean && clean !== '-' && clean !== 'ทั่วไป' && !allSubs.includes(clean)) allSubs.push(clean);
+                      };
+                      addS(editingRecord.subject_650a);
+                      addS(editingRecord.subject_650_2);
+                      addS(editingRecord.subject_650_3);
+                      if (Array.isArray(editingRecord.marc_tags)) {
+                        editingRecord.marc_tags.forEach((t: any) => {
+                          if (t && (t.tagID === '650' || t.tag === '650')) {
+                            const parsed = parseMarcSubfield(t.data || t.content || '', 'a') || (t.data || t.content || '').replace(/[\u001f\$][a-z0-9]/g, ' ').trim();
+                            addS(parsed);
+                          }
+                        });
+                      }
+                      const subjLine = allSubs.length > 0 ? `\nหัวเรื่อง: ${allSubs.join(', ')}` : '';
+                      const cardText = `ISBN: ${editingRecord.isbn || '-'}\nเลขเรียกหนังสือ: ${editingRecord.ddc_082a} ${editingRecord.cutter_082b}\nผู้แต่ง: ${editingRecord.author_personal || '-'}\nชื่อเรื่อง: ${editingRecord.title_245a || '-'}${editingRecord.title_245b && editingRecord.title_245b !== '-' ? ` : ${editingRecord.title_245b}` : ''}\nพิมพลักษณ์: ${editingRecord.pub_place || 'กรุงเทพฯ'} : ${editingRecord.publisher || '-'}, ${editingRecord.pub_year || '-'}\nจำนวนหน้า: ${editingRecord.pages_300a || '160 หน้า'} : ${editingRecord.illustration_300b || 'ภาพประกอบ'} ; ${editingRecord.dimensions_300c || '20 ซม.'}${subjLine}\nสาระสังเขป: ${editingRecord.summary_520 || '-'}\nสถานที่จัดเก็บ: ${editingRecord.storage_location || 'NCILibrary'}`;
+                      navigator.clipboard.writeText(cardText);
+                      setCopiedCardInModal(true);
+                      setTimeout(() => setCopiedCardInModal(false), 2000);
+                    }}
+                    className="text-xs text-amber-600 hover:text-amber-800 font-bold flex items-center gap-1 transition cursor-pointer"
+                  >
+                    {copiedCardInModal ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
+                    <span>{copiedCardInModal ? 'คัดลอกตารางแล้ว!' : 'คัดลอกตาราง'}</span>
+                  </button>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+                  <table className="w-full text-xs sm:text-sm border-collapse">
+                    <tbody className="divide-y divide-slate-100">
+                      <tr>
+                        <td className="w-36 sm:w-44 py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">ISBN</td>
+                        <td className="py-2.5 px-4 text-slate-800 font-mono">{editingRecord.isbn || '-'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">เลขเรียกหนังสือ</td>
+                        <td className="py-2.5 px-4 text-slate-900 font-mono font-medium">{editingRecord.ddc_082a} {editingRecord.cutter_082b}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">ผู้แต่ง</td>
+                        <td className="py-2.5 px-4 text-slate-800">{editingRecord.author_personal || '-'}</td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">ชื่อเรื่อง</td>
+                        <td className="py-2.5 px-4 text-slate-900 font-medium">
+                          {editingRecord.title_245a}{editingRecord.title_245b && editingRecord.title_245b !== '-' ? ` : ${editingRecord.title_245b}` : ''}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">พิมพลักษณ์</td>
+                        <td className="py-2.5 px-4 text-slate-800">
+                          {editingRecord.pub_place || 'กรุงเทพฯ'} : {editingRecord.publisher || '-'}, {editingRecord.pub_year || '-'}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">จำนวนหน้า</td>
+                        <td className="py-2.5 px-4 text-slate-800">
+                          {editingRecord.pages_300a || '160 หน้า'}
+                          {editingRecord.illustration_300b && editingRecord.illustration_300b !== '-' ? ` : ${editingRecord.illustration_300b}` : ' : ภาพประกอบ'}
+                          {` ; ${editingRecord.dimensions_300c || '20 ซม.'}`}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">สาระสังเขป</td>
+                        <td className="py-2.5 px-4 text-slate-700 leading-relaxed text-xs sm:text-sm">
+                          {editingRecord.summary_520 || '-'}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">หัวเรื่อง</td>
+                        <td className="py-2.5 px-4 space-y-1.5">
+                          {(() => {
+                            const allSubs: string[] = [];
+                            const addS = (val?: string) => {
+                              if (!val) return;
+                              const clean = val.replace(/[\u001f\$][a-z0-9]/g, ' ').replace(/^[\s\/:;=,-]+/, '').replace(/[\s\/:;=,-]+$/, '').trim();
+                              if (clean && clean !== '-' && clean !== 'ทั่วไป' && !allSubs.includes(clean)) allSubs.push(clean);
+                            };
+                            addS(editingRecord.subject_650a);
+                            addS(editingRecord.subject_650_2);
+                            addS(editingRecord.subject_650_3);
+                            if (Array.isArray(editingRecord.marc_tags)) {
+                              editingRecord.marc_tags.forEach((t: any) => {
+                                if (t && (t.tagID === '650' || t.tag === '650')) {
+                                  const parsed = parseMarcSubfield(t.data || t.content || '', 'a') || (t.data || t.content || '').replace(/[\u001f\$][a-z0-9]/g, ' ').trim();
+                                  addS(parsed);
+                                }
+                              });
+                            }
+                            if (allSubs.length === 0) return <span className="text-slate-400">-</span>;
+                            return allSubs.map((subj, idx) => (
+                              <div key={`edit_card_subj_${idx}`} className="text-blue-600 flex items-center gap-1.5 font-medium">
+                                <span className="text-slate-400 font-mono text-[11px] font-bold">{idx + 1}.</span>
+                                <span>{subj}</span>
+                              </div>
+                            ));
+                          })()}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">รายการเพิ่มผู้แต่ง</td>
+                        <td className="py-2.5 px-4 text-slate-800">
+                          {editingRecord.added_entry_700 || '-'}
+                        </td>
+                      </tr>
+                      <tr>
+                        <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">สถานที่จัดเก็บ</td>
+                        <td className="py-2.5 px-4 text-slate-800 flex items-center gap-1.5 font-medium">
+                          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 inline-block shadow-sm"></span>
+                          <span>{editingRecord.storage_location || 'NCILibrary'}</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+
+            {/* TAB 2: ฟอร์มแก้ไข MARC 21 (ข้อมูลแท็ก) */}
+            {editModalTab === 'fields' && (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
               {/* 020 ISBN */}
               <div>
@@ -4078,6 +4562,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 </div>
               </div>
             </div>
+            )}
 
             <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
               <button
