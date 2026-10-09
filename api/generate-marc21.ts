@@ -69,6 +69,7 @@ export interface Marc21Record {
   subject_uniform_630?: string;
   subject_geo_651?: string;
   subject_650_2?: string;
+  subject_650_3?: string;
   added_corp_710?: string;
   added_title_740?: string;
   series_uniform_830?: string;
@@ -330,6 +331,9 @@ export function generateMarcTagsFromRecord(r: Marc21Record): MarcTagItem[] {
   if (r.subject_650_2 && r.subject_650_2 !== '-') {
     tags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${r.subject_650_2}` });
   }
+  if (r.subject_650_3 && r.subject_650_3 !== '-') {
+    tags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${r.subject_650_3}` });
+  }
   if (r.subject_geo_651 && r.subject_geo_651 !== '-') {
     tags.push({ tagID: '651', indc1: '', indc2: '4', data: `$a${r.subject_geo_651}` });
   }
@@ -442,31 +446,87 @@ function parseMarcSubfield(dataStr: string, code: string): string {
   return matches.join(' ');
 }
 
-export function formatAddedEntry700(val: string): string {
-  if (!val || val === '-' || val.trim() === '') return '-';
-  let clean = val.trim();
-  
-  clean = clean
-    .replace(/,\s*ผู้เรียบเรียง/g, ', ผู้แปล')
-    .replace(/,\s*เรียบเรียง/g, ', ผู้แปล')
-    .replace(/;\s*ผู้เรียบเรียง/g, ', ผู้แปล')
-    .replace(/;\s*เรียบเรียง/g, ', ผู้แปล')
-    .replace(/\s*ผู้เรียบเรียง/g, ', ผู้แปล')
-    .replace(/\s*เรียบเรียง/g, ', ผู้แปล')
-    .replace(/,\s*แปล\.$/g, ', ผู้แปล.')
-    .replace(/,\s*แปล$/g, ', ผู้แปล')
-    .replace(/\s*แปล\.$/g, ', ผู้แปล.')
-    .replace(/\s*แปล$/g, ', ผู้แปล');
+export const STANDARD_700_ROLES_LIST = [
+  'ผู้แต่ง',
+  'บรรณาธิการ',
+  'ผู้แปล',
+  'ผู้วาดภาพประกอบ',
+  'ผู้รวบรวม',
+  'ช่างภาพ',
+  'ผู้ประพันธ์เพลง',
+  'ผู้บรรยาย',
+  'ผู้อำนวยการผลิต',
+  'ผู้กำกับ',
+  'ผู้สัมภาษณ์',
+  'ผู้ถูกสัมภาษณ์',
+  'อาจารย์ที่ปรึกษา',
+] as const;
 
-  if (!clean.includes('ผู้แปล') && !clean.includes('ผู้แต่งร่วม') && !clean.includes('วาดภาพ') && !clean.includes('บรรณาธิการ')) {
-    if (clean.endsWith('.')) {
-      clean = clean.slice(0, -1).trim() + ', ผู้แปล.';
-    } else {
-      clean = `${clean}, ผู้แปล`;
+export const STANDARD_700_ROLES_MATCH = [...STANDARD_700_ROLES_LIST].sort((a, b) => b.length - a.length);
+
+export function parseAddedEntry700Parts(val: string): { name: string; role: string; formatted: string } {
+  if (!val || val === '-' || val.trim() === '') {
+    return { name: '', role: '', formatted: '-' };
+  }
+  let str = val.trim();
+
+  // 1. Check known standard roles first (sorted longest to shortest)
+  for (const role of STANDARD_700_ROLES_MATCH) {
+    const reg = new RegExp(`[,;:/(]?\\s*(?:${role})\\.?\\)?$`, 'i');
+    if (reg.test(str)) {
+      const name = str.replace(reg, '').replace(/[,\s:;=.]+$/, '').trim();
+      return { name, role, formatted: `${name}, ${role}.` };
     }
   }
 
-  return clean;
+  // 2. Generic patterns for variations/abbreviations
+  const genericPatterns: Array<{ match: RegExp; role: string }> = [
+    { match: /[,;:/(]?\s*(?:แปลโดย|แปล|trans\.?|translator)\.?\)?$/i, role: 'ผู้แปล' },
+    { match: /[,;:/(]?\s*(?:ผู้วาดภาพ|ภาพประกอบ|ภาพโดย|ภาพ|illus\.?|illustrator)\.?\)?$/i, role: 'ผู้วาดภาพประกอบ' },
+    { match: /[,;:/(]?\s*(?:บก\.?|ed\.?|editor)\.?\)?$/i, role: 'บรรณาธิการ' },
+    { match: /[,;:/(]?\s*(?:รวบรวมโดย|รวบรวม|comp\.?|compiler)\.?\)?$/i, role: 'ผู้รวบรวม' },
+    { match: /[,;:/(]?\s*(?:แต่งโดย|ผู้เขียน|เขียนโดย|ผู้แต่งร่วม|เขียน)\.?\)?$/i, role: 'ผู้แต่ง' },
+    { match: /[,;:/(]?\s*(?:ถ่ายภาพโดย|ถ่ายภาพ|ผู้ถ่ายภาพ|photo\.?|photographer)\.?\)?$/i, role: 'ช่างภาพ' },
+    { match: /[,;:/(]?\s*(?:ประพันธ์เพลง|ทำนอง|คำร้อง)\.?\)?$/i, role: 'ผู้ประพันธ์เพลง' },
+    { match: /[,;:/(]?\s*(?:บรรยายโดย|บรรยาย)\.?\)?$/i, role: 'ผู้บรรยาย' },
+    { match: /[,;:/(]?\s*(?:อำนวยการผลิต|ผู้อำนวยการสร้าง)\.?\)?$/i, role: 'ผู้อำนวยการผลิต' },
+    { match: /[,;:/(]?\s*(?:กำกับโดย|กำกับการแสดง|ผู้กำกับการแสดง)\.?\)?$/i, role: 'ผู้กำกับ' },
+    { match: /[,;:/(]?\s*(?:สัมภาษณ์โดย)\.?\)?$/i, role: 'ผู้สัมภาษณ์' },
+    { match: /[,;:/(]?\s*(?:ที่ปรึกษา)\.?\)?$/i, role: 'อาจารย์ที่ปรึกษา' }
+  ];
+
+  for (const gp of genericPatterns) {
+    if (gp.match.test(str)) {
+      const name = str.replace(gp.match, '').replace(/[,\s:;=.]+$/, '').trim();
+      return { name, role: gp.role, formatted: `${name}, ${gp.role}.` };
+    }
+  }
+
+  // 3. Custom role if user typed comma + role (e.g. "สมชาย, ผู้ตรวจทาน." or "ดร.สมบัติ, ผู้ประสานงาน.")
+  if (str.includes(',')) {
+    const parts = str.split(',');
+    const name = parts[0].trim();
+    let role = parts.slice(1).join(',').trim().replace(/\.$/, '');
+    if (name && role) {
+      return { name, role, formatted: `${name}, ${role}.` };
+    }
+  }
+
+  // 4. Raw name without role
+  const clean = str.replace(/[\s\.:;=,]+$/, '').replace(/^[\s\.:;=,]+/, '').trim();
+  if (!clean || clean === '-') return { name: '', role: '', formatted: '-' };
+
+  return { name: clean, role: '', formatted: clean };
+}
+
+export function formatAddedEntry700(val: string): string {
+  if (!val || val === '-' || val.trim() === '') return '-';
+  const parsed = parseAddedEntry700Parts(val);
+  if (!parsed.name) return '-';
+  if (parsed.role) {
+    return `${parsed.name}, ${parsed.role}.`;
+  }
+  return parsed.name;
 }
 
 export function formatAuthorList245c(rawResp: string, authorPersonal?: string): string {

@@ -29,7 +29,8 @@ import {
   ChevronUp,
   FileText,
   Users,
-  ClipboardPaste
+  ClipboardPaste,
+  ImageIcon
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
@@ -361,33 +362,99 @@ export const parseMarcSubfield = (data: string, subfield: string): string => {
   return match ? match[1].trim() : '';
 };
 
-export const formatAddedEntry700 = (val: string): string => {
+export const STANDARD_700_ROLES_LIST = [
+  'ผู้แต่ง',
+  'บรรณาธิการ',
+  'ผู้แปล',
+  'ผู้วาดภาพประกอบ',
+  'ผู้รวบรวม',
+  'ช่างภาพ',
+  'ผู้ประพันธ์เพลง',
+  'ผู้บรรยาย',
+  'ผู้อำนวยการผลิต',
+  'ผู้กำกับ',
+  'ผู้สัมภาษณ์',
+  'ผู้ถูกสัมภาษณ์',
+  'อาจารย์ที่ปรึกษา',
+] as const;
+
+export const STANDARD_700_ROLES_MATCH = [...STANDARD_700_ROLES_LIST].sort((a, b) => b.length - a.length);
+
+export const parseAddedEntry700Parts = (val: string): { name: string; role: string; formatted: string } => {
+  if (!val || val === '-' || val.trim() === '') {
+    return { name: '', role: '', formatted: '-' };
+  }
+  let str = val.trim();
+
+  // 1. Check known standard roles first (sorted longest to shortest)
+  for (const role of STANDARD_700_ROLES_MATCH) {
+    const reg = new RegExp(`[,;:/(]?\\s*(?:${role})\\.?\\)?$`, 'i');
+    if (reg.test(str)) {
+      const name = str.replace(reg, '').replace(/[,\s:;=.]+$/, '').trim();
+      return { name, role, formatted: `${name}, ${role}.` };
+    }
+  }
+
+  // 2. Generic patterns for variations/abbreviations
+  const genericPatterns: Array<{ match: RegExp; role: string }> = [
+    { match: /[,;:/(]?\s*(?:แปลโดย|แปล|trans\.?|translator)\.?\)?$/i, role: 'ผู้แปล' },
+    { match: /[,;:/(]?\s*(?:ผู้วาดภาพ|ภาพประกอบ|ภาพโดย|ภาพ|illus\.?|illustrator)\.?\)?$/i, role: 'ผู้วาดภาพประกอบ' },
+    { match: /[,;:/(]?\s*(?:บก\.?|ed\.?|editor)\.?\)?$/i, role: 'บรรณาธิการ' },
+    { match: /[,;:/(]?\s*(?:รวบรวมโดย|รวบรวม|comp\.?|compiler)\.?\)?$/i, role: 'ผู้รวบรวม' },
+    { match: /[,;:/(]?\s*(?:แต่งโดย|ผู้เขียน|เขียนโดย|ผู้แต่งร่วม|เขียน)\.?\)?$/i, role: 'ผู้แต่ง' },
+    { match: /[,;:/(]?\s*(?:ถ่ายภาพโดย|ถ่ายภาพ|ผู้ถ่ายภาพ|photo\.?|photographer)\.?\)?$/i, role: 'ช่างภาพ' },
+    { match: /[,;:/(]?\s*(?:ประพันธ์เพลง|ทำนอง|คำร้อง)\.?\)?$/i, role: 'ผู้ประพันธ์เพลง' },
+    { match: /[,;:/(]?\s*(?:บรรยายโดย|บรรยาย)\.?\)?$/i, role: 'ผู้บรรยาย' },
+    { match: /[,;:/(]?\s*(?:อำนวยการผลิต|ผู้อำนวยการสร้าง)\.?\)?$/i, role: 'ผู้อำนวยการผลิต' },
+    { match: /[,;:/(]?\s*(?:กำกับโดย|กำกับการแสดง|ผู้กำกับการแสดง)\.?\)?$/i, role: 'ผู้กำกับ' },
+    { match: /[,;:/(]?\s*(?:สัมภาษณ์โดย)\.?\)?$/i, role: 'ผู้สัมภาษณ์' },
+    { match: /[,;:/(]?\s*(?:ที่ปรึกษา)\.?\)?$/i, role: 'อาจารย์ที่ปรึกษา' }
+  ];
+
+  for (const gp of genericPatterns) {
+    if (gp.match.test(str)) {
+      const name = str.replace(gp.match, '').replace(/[,\s:;=.]+$/, '').trim();
+      return { name, role: gp.role, formatted: `${name}, ${gp.role}.` };
+    }
+  }
+
+  // 3. Custom role if user typed comma + role (e.g. "สมชาย, ผู้ตรวจทาน." or "ดร.สมบัติ, ผู้ประสานงาน.")
+  if (str.includes(',')) {
+    const parts = str.split(',');
+    const name = parts[0].trim();
+    let role = parts.slice(1).join(',').trim().replace(/\.$/, '');
+    if (name && role) {
+      return { name, role, formatted: `${name}, ${role}.` };
+    }
+  }
+
+  // 4. Raw name without role
+  const clean = str.replace(/[\s\.:;=,]+$/, '').replace(/^[\s\.:;=,]+/, '').trim();
+  if (!clean || clean === '-') return { name: '', role: '', formatted: '-' };
+
+  return { name: clean, role: '', formatted: clean };
+};
+
+export const formatAddedEntry700 = (val: string, defaultRole?: string): string => {
   if (!val || val === '-' || val.trim() === '') return '-';
-  let clean = val.trim();
-  
-  // Clean all existing punctuation and suffix variants
-  clean = clean
-    .replace(/,\s*ผู้\s*,\s*ผู้แปล\.?/gi, '')
-    .replace(/,\s*ผู้\s*,\s*ผู้\.?/gi, '')
-    .replace(/,\s*ผู้แปล\s*,\s*ผู้แปล\.?/gi, '')
-    .replace(/,\s*ผู้เรียบเรียง\s*,\s*ผู้แปล\.?/gi, '')
-    .replace(/,\s*ผู้เรียบเรียง\.?/gi, '')
-    .replace(/,\s*เรียบเรียง\.?/gi, '')
-    .replace(/,\s*ผู้แปล\.?/gi, '')
-    .replace(/,\s*ผู้\.?/gi, '')
-    .replace(/,\s*แปล\.?/gi, '')
-    .replace(/\s*ผู้เรียบเรียง\.?/gi, '')
-    .replace(/\s*เรียบเรียง\.?/gi, '')
-    .replace(/\s*ผู้แปล\.?/gi, '')
-    .replace(/\s*แปลโดย\.?/gi, '')
-    .replace(/\s*แปล\.?/gi, '')
-    .replace(/[\s\.:;=,]+$/, '')
-    .replace(/^[\s\.:;=,]+/, '')
-    .trim();
+  const parsed = parseAddedEntry700Parts(val);
+  if (!parsed.name) return '-';
+  if (parsed.role) {
+    return `${parsed.name}, ${parsed.role}.`;
+  }
+  if (defaultRole) {
+    return `${parsed.name}, ${defaultRole}.`;
+  }
+  return parsed.name;
+};
 
-  if (!clean || clean === '-') return '-';
-
-  return `${clean}, ผู้แปล.`;
+export const attachRoleToAddedEntry700 = (val: string, newRole: string): string => {
+  if (!val || val === '-') return newRole && newRole !== '__CLEAR__' ? `, ${newRole}.` : '-';
+  const parsed = parseAddedEntry700Parts(val);
+  const baseName = parsed.name || val.trim();
+  if (!baseName || baseName === '-') return '-';
+  if (!newRole || newRole === '__CLEAR__') return baseName;
+  return `${baseName}, ${newRole}.`;
 };
 
 export const formatAuthorList245c = (rawResp: string, authorPersonal?: string): string => {
@@ -740,6 +807,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
   const [statusMessage, setStatusMessage] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [editingRecord, setEditingRecord] = useState<Marc21Record | null>(null);
+  const [isFetchingAiCover, setIsFetchingAiCover] = useState(false);
   const [lastCopiedRow, setLastCopiedRow] = useState<Marc21Record | null>(null);
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<'selected' | Marc21Record | null>(null);
   const [startAccNum, setStartAccNum] = useState<number>(() => {
@@ -936,6 +1004,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
     records.forEach(r => {
       if (r.subject_650a && r.subject_650a !== '-' && r.subject_650a !== 'ทั่วไป') set.add(r.subject_650a.trim());
       if (r.subject_650_2 && r.subject_650_2 !== '-' && r.subject_650_2 !== 'ทั่วไป') set.add(r.subject_650_2.trim());
+      if (r.subject_650_3 && r.subject_650_3 !== '-' && r.subject_650_3 !== 'ทั่วไป') set.add(r.subject_650_3.trim());
       if (Array.isArray(r.marc_tags)) {
         r.marc_tags.forEach((tag: any) => {
           if (tag.tagID === '650' || tag.tag === '650') {
@@ -979,13 +1048,24 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
     return Array.from(set).filter(Boolean);
   }, [records]);
 
-  // Dynamic suggestions for 700 translators / co-authors
+  // Dynamic suggestions for 700 translators / co-authors / contributors
   const allAvailableTranslators700 = React.useMemo(() => {
     const set = new Set<string>([
       'จักรพงษ์ เมษพันธุ์, ผู้แปล.',
       'กัญญารัตน์ จิราสวัสดิ์, ผู้แปล.',
       'ภาสกร รัตนสุวรรณ, ผู้แปล.',
-      'สมชาย, ผู้แปล.',
+      'Kang Gyung-Hyo, ผู้วาดภาพประกอบ.',
+      'วิเชียร เกตุสิงห์, บรรณาธิการ.',
+      'สมชาย, ผู้แต่ง.',
+      'ประเสริฐ ณ นคร, ผู้รวบรวม.',
+      'มานิต ศรีวานิชภูมิ, ช่างภาพ.',
+      'ดนัย ดนตรี, ผู้ประพันธ์เพลง.',
+      'สุทธิชัย หยุ่น, ผู้บรรยาย.',
+      'ยุทธนา มุกดาสนิท, ผู้อำนวยการผลิต.',
+      'เป็นเอก รัตนเรือง, ผู้กำกับ.',
+      'กนก รัตน์วงศ์สกุล, ผู้สัมภาษณ์.',
+      'สุลักษณ์ ศิวรักษ์, ผู้ถูกสัมภาษณ์.',
+      'สมคิด เลิศไพฑูรย์, อาจารย์ที่ปรึกษา.',
       'นพพร สุวรรณพานิช, ผู้แปล.',
       'อารีนา แยนา, ผู้แปล.',
       'ธนวดี บุญล้วน, ผู้แปล.',
@@ -998,8 +1078,17 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
         set.add(formatAddedEntry700(r.added_entry_700));
       }
     });
+
+    if (editingRecord?.added_entry_700 && editingRecord.added_entry_700 !== '-') {
+      const parsed = parseAddedEntry700Parts(editingRecord.added_entry_700);
+      if (parsed.name) {
+        STANDARD_700_ROLES_LIST.forEach(role => {
+          set.add(`${parsed.name}, ${role}.`);
+        });
+      }
+    }
     return Array.from(set).filter(Boolean);
-  }, [records]);
+  }, [records, editingRecord?.added_entry_700]);
 
   // Dynamic suggestions for publishers
   const allAvailablePublishers = React.useMemo(() => {
@@ -1127,9 +1216,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
     showToast(`📖 อัปเดตข้อมูล 250 พิมพ์ครั้งที่ เป็น "${cleanEdition}" เรียบร้อย`);
   };
 
-  // Handle inline change of 700 (ผู้แปล / ผู้แต่งร่วม) from dropdown
+  // Handle inline change of 700 (ผู้ร่วมรับผิดชอบ / ผู้แปล / บทบาทหน้าที่) from dropdown
   const handleAddedEntry700Change = (recordId: string, newVal: string) => {
-    const formatted = formatAddedEntry700(newVal);
+    const formatted = newVal && newVal !== '-' ? (parseAddedEntry700Parts(newVal).formatted || newVal) : '-';
     setRecords(prev => prev.map(r => {
       if (r.id !== recordId) return r;
       let updatedTags = Array.isArray(r.marc_tags) ? [...r.marc_tags] : [];
@@ -1199,6 +1288,106 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
     if (!text || text === '-') return;
     navigator.clipboard.writeText(text);
     showToast(`📋 คัดลอก ${label} "${text}" เรียบร้อยแล้ว`);
+  };
+
+  const handleFetchAiCover = async () => {
+    if (!editingRecord) return;
+    setIsFetchingAiCover(true);
+    try {
+      const cleanIsbn = (editingRecord.isbn || '').replace(/[^0-9X]/gi, '');
+      const cleanTitle = (editingRecord.title_245a || '').split('/')[0].split('=')[0].trim();
+      const cleanAuthor = (editingRecord.author_personal || '').trim();
+      const cleanPublisher = (editingRecord.publisher || '').trim();
+
+      if (!cleanIsbn && !cleanTitle) {
+        showToast('⚠️ กรุณาระบุชื่อเรื่อง หรือ ISBN เพื่อให้ AI ดึงปกหนังสือจริง');
+        setIsFetchingAiCover(false);
+        return;
+      }
+
+      let foundUrl: string | null = null;
+      let sourceName = '';
+
+      // 1. Try serverless search-cover endpoint
+      try {
+        const res = await fetch('/api/search-cover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            isbn: cleanIsbn,
+            title: cleanTitle,
+            author: cleanAuthor,
+            publisher: cleanPublisher
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.cover_image) {
+            foundUrl = data.cover_image;
+            sourceName = data.source === 'google_books' ? 'Google Books AI' : (data.source || 'AI Web Search');
+          }
+        }
+      } catch (err) {
+        console.warn('Cover search API note:', err);
+      }
+
+      // 2. Direct client Google Books API search
+      if (!foundUrl) {
+        try {
+          const queries: string[] = [];
+          if (cleanIsbn.length >= 10) queries.push(`isbn:${cleanIsbn}`);
+          if (cleanTitle) {
+            const cleanT = cleanTitle.replace(/[^\u0E00-\u0E7Fa-zA-Z0-9\s]/g, ' ').trim();
+            const cleanA = cleanAuthor.replace(/[^\u0E00-\u0E7Fa-zA-Z0-9\s]/g, ' ').trim();
+            if (cleanA && cleanA !== '-') queries.push(`intitle:${cleanT}+inauthor:${cleanA}`);
+            queries.push(cleanT);
+          }
+
+          for (const q of queries) {
+            const gbRes = await fetch(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=5`);
+            if (gbRes.ok) {
+              const gbData = await gbRes.json();
+              if (gbData.items && gbData.items.length > 0) {
+                for (const item of gbData.items) {
+                  const imgLinks = item.volumeInfo?.imageLinks;
+                  if (imgLinks?.thumbnail || imgLinks?.smallThumbnail || imgLinks?.medium || imgLinks?.large) {
+                    let img = (imgLinks.large || imgLinks.medium || imgLinks.thumbnail || imgLinks.smallThumbnail).replace('http://', 'https://');
+                    img = img.replace('&edge=curl', '');
+                    foundUrl = img;
+                    sourceName = 'Google Books AI';
+                    break;
+                  }
+                }
+              }
+            }
+            if (foundUrl) break;
+          }
+        } catch (gbErr) {
+          console.warn('Client Google Books note:', gbErr);
+        }
+      }
+
+      // 3. Fallback to OpenLibrary high-res cover
+      if (!foundUrl && cleanIsbn.length >= 10) {
+        foundUrl = `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-L.jpg`;
+        sourceName = 'OpenLibrary';
+      }
+
+      if (foundUrl) {
+        setEditingRecord({
+          ...editingRecord,
+          cover_image: foundUrl,
+          electronic_856: foundUrl
+        });
+        showToast(`🖼️ ดึงปกหนังสือจริงด้วย AI สำเร็จ (${sourceName})`);
+      } else {
+        showToast('⚠️ AI ไม่พบรูปปกหนังสือจริงสำหรับรายการนี้ สามารถวางลิงก์ภาพหน้าปกเองได้');
+      }
+    } catch (e: any) {
+      showToast(`⚠️ การดึงรูปปกขัดข้อง: ${e?.message || 'เครือข่ายขัดข้อง'}`);
+    } finally {
+      setIsFetchingAiCover(false);
+    }
   };
 
   const loadInitialSamples = () => {
@@ -1784,6 +1973,32 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
     }).join('\t');
   };
 
+  // Open edit modal with all 3 650 subjects extracted from record or marc_tags
+  const handleStartEdit = (r: Marc21Record) => {
+    const marc650s: string[] = [];
+    if (Array.isArray(r.marc_tags)) {
+      r.marc_tags.forEach((t: any) => {
+        if (t && (t.tagID === '650' || t.tag === '650')) {
+          const parsed = parseMarcSubfield(t.data || t.content || '', 'a') || (t.data || t.content || '').replace(/[\u001f\$][a-z0-9]/g, ' ').trim();
+          if (parsed && parsed !== '-' && parsed !== 'ทั่วไป' && !marc650s.includes(parsed)) {
+            marc650s.push(parsed);
+          }
+        }
+      });
+    }
+
+    const s1 = (r.subject_650a && r.subject_650a !== '-' && r.subject_650a !== 'ทั่วไป') ? r.subject_650a : (marc650s[0] || r.subject_650a || '');
+    const s2 = (r.subject_650_2 && r.subject_650_2 !== '-') ? r.subject_650_2 : (marc650s[1] || '');
+    const s3 = (r.subject_650_3 && r.subject_650_3 !== '-') ? r.subject_650_3 : (marc650s[2] || '');
+
+    setEditingRecord({
+      ...r,
+      subject_650a: s1,
+      subject_650_2: s2,
+      subject_650_3: s3,
+    });
+  };
+
   // Copy single row (From Column 1 to Column 3 EXTRA2)
   const handleCopyRow = (r: Marc21Record) => {
     setLastCopiedRow(r);
@@ -1930,7 +2145,18 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
       ddc: r.ddc_082a,
       call_number: `${r.ddc_082a} ${r.cutter_082b}`.trim(),
       category: r.storage_location || r.subject_650a || 'ทั่วไป',
-      subject: r.subject_650a,
+      subject: r.subject_650a || '',
+      subject_2: (r.subject_650_2 && r.subject_650_2 !== '-') ? r.subject_650_2 : '',
+      subject_3: (r.subject_650_3 && r.subject_650_3 !== '-') ? r.subject_650_3 : '',
+      subject_650a: r.subject_650a || '',
+      subject_650_2: (r.subject_650_2 && r.subject_650_2 !== '-') ? r.subject_650_2 : '',
+      subject_650_3: (r.subject_650_3 && r.subject_650_3 !== '-') ? r.subject_650_3 : '',
+      all650Subjects: [r.subject_650a, r.subject_650_2, r.subject_650_3].filter(s => Boolean(s && s !== '-' && s !== 'ทั่วไป')),
+      marc_tags: r.marc_tags || [],
+      cover_image: r.cover_image || (r.electronic_856 && r.electronic_856.startsWith('http') ? r.electronic_856 : ''),
+      dimensions_300c: r.dimensions_300c || '',
+      book_size: r.dimensions_300c || '',
+      storage_location: r.storage_location || 'NCILibrary',
       description: r.summary_520,
       status: r.status,
       edition: r.edition_250,
@@ -2814,7 +3040,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                             <ClipboardPaste className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => setEditingRecord(r)}
+                            onClick={() => handleStartEdit(r)}
                             title="แก้ไขข้อมูลแถวนี้"
                             className="p-1 text-slate-600 hover:text-slate-900 hover:bg-slate-200 rounded transition cursor-pointer"
                           >
@@ -2866,8 +3092,18 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                       <td className="p-2.5 font-mono text-indigo-700 font-semibold">{r.isbn}</td>
                       <td className="p-2.5 font-medium text-slate-800">{r.author_personal}</td>
                       <td className="p-2.5 text-slate-600">{r.author_corporate}</td>
-                      <td className="p-2.5 font-semibold text-slate-900 max-w-xs truncate" title={r.title_245a}>
-                        {r.title_245a}
+                      <td className="p-2.5 font-semibold text-slate-900 max-w-xs" title={r.title_245a}>
+                        <div className="flex items-center gap-2 min-w-0">
+                          {(r.cover_image || (r.electronic_856 && r.electronic_856.startsWith('http'))) && (
+                            <img
+                              src={r.cover_image || r.electronic_856}
+                              alt=""
+                              className="w-6 h-8 object-cover rounded shadow-2xs border border-slate-200 shrink-0"
+                              onError={(e: any) => { e.currentTarget.style.display = 'none'; }}
+                            />
+                          )}
+                          <span className="truncate">{r.title_245a}</span>
+                        </div>
                       </td>
                       <td className="p-2.5 text-slate-600 max-w-xs truncate" title={r.title_245b}>
                         {r.title_245b}
@@ -2983,29 +3219,35 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
 
                           // 2. From r.added_entry_700
                           if (r.added_entry_700 && r.added_entry_700 !== '-') {
-                            optionsSet.add(formatAddedEntry700(r.added_entry_700));
+                            optionsSet.add(r.added_entry_700);
+                            const parsed = parseAddedEntry700Parts(r.added_entry_700);
+                            if (parsed.name) {
+                              STANDARD_700_ROLES_LIST.forEach(role => {
+                                optionsSet.add(`${parsed.name}, ${role}.`);
+                              });
+                            }
                           }
 
-                          // 3. Extract translator from raw responsibility text if present
+                          // 3. Extract contributor from raw responsibility text if present
                           if (r.responsibility_245c && (r.responsibility_245c.includes('แปล') || r.responsibility_245c.includes('ผู้แปล'))) {
                             const match = r.responsibility_245c.match(/([^\/;,]+?)\s*(?:แปล|ผู้แปล)/i);
                             if (match && match[1]) {
-                              optionsSet.add(formatAddedEntry700(match[1].trim()));
+                              optionsSet.add(formatAddedEntry700(match[1].trim(), 'ผู้แปล'));
                             }
                           }
 
                           const options = Array.from(optionsSet).filter(Boolean);
-                          const currentVal = formatAddedEntry700(r.added_entry_700);
+                          const currentVal = r.added_entry_700 && r.added_entry_700 !== '-' ? r.added_entry_700 : '-';
 
                           return (
                             <div className="relative">
                               <select
                                 value={currentVal}
                                 onChange={(e) => handleAddedEntry700Change(r.id, e.target.value)}
-                                title="เลือกผู้แปล/ผู้แต่งร่วม (Tag 700)"
+                                title="เลือกผู้ร่วมรับผิดชอบ/ผู้แปล/บทบาทหน้าที่ (Tag 700)"
                                 className="w-full bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 hover:border-indigo-400 focus:border-indigo-500 rounded-lg px-2 py-1 text-xs text-slate-800 font-medium cursor-pointer transition focus:outline-none focus:ring-1 focus:ring-indigo-500 truncate shadow-sm"
                               >
-                                <option value="-">- (ไม่มีผู้แปล/ผู้แต่งร่วม)</option>
+                                <option value="-">- (ไม่มี Tag 700)</option>
                                 {options.map((opt, oIdx) => (
                                   <option key={`700_${r.id}_${oIdx}`} value={opt}>
                                     👥 {opt}
@@ -3181,149 +3423,43 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-              <div className="sm:col-span-2 md:col-span-3">
-                <label className="block font-semibold text-slate-700 mb-1">245 $a : $b = 246 $a (ชื่อเรื่องเต็ม / ชื่อเรื่องคู่ขนาน)</label>
-                <input
-                  type="text"
-                  value={editingRecord.title_245a}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, title_245a: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">246 (Ind1=3, Ind2=1) $a :$b (ชื่อเรื่องคู่ขนาน/ภาษาอังกฤษ)</label>
-                <input
-                  type="text"
-                  value={editingRecord.title_245b || ''}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, title_245b: e.target.value })}
-                  placeholder="$aTitle :$bSubtitle."
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-emerald-800"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">541 ราคา (บาท)</label>
-                <input
-                  type="text"
-                  value={editingRecord.price_541 || ''}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, price_541: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-emerald-700"
-                />
-              </div>
-
-              <div className="sm:col-span-2">
-                <label className="block font-semibold text-slate-700 mb-1">245 $c ส่วนแจ้งความรับผิดชอบ (ชื่อผู้แต่งอย่างเดียว ไม่ใส่ชื่อผู้วาดภาพประกอบ และชื่อผู้แปล)</label>
-                <input
-                  type="text"
-                  value={editingRecord.responsibility_245c || ''}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, responsibility_245c: e.target.value })}
-                  placeholder="เช่น Robert T. Kiyosaki."
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">700 ผู้แปล / ผู้แต่งร่วม (เช่น จักรพงษ์ เมษพันธุ์, ผู้แปล)</label>
-                <input
-                  type="text"
-                  list="translators-700-options"
-                  value={editingRecord.added_entry_700 || ''}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, added_entry_700: formatAddedEntry700(e.target.value) })}
-                  placeholder="พิมพ์หรือเลือกผู้แปล..."
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium text-indigo-900 focus:ring-2 focus:ring-indigo-500"
-                />
-                <datalist id="translators-700-options">
-                  {allAvailableTranslators700.map((item, idx) => (
-                    <option key={`dl_700_${idx}`} value={item} />
-                  ))}
-                </datalist>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">490 ชุด / ซีรีส์</label>
-                <input
-                  type="text"
-                  list="series-490-options"
-                  value={editingRecord.series_490 || ''}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, series_490: e.target.value })}
-                  placeholder="พิมพ์หรือเลือกชุด/ซีรีส์..."
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
-                />
-                <datalist id="series-490-options">
-                  {allAvailableSeries490.map((item, idx) => (
-                    <option key={`dl_490_${idx}`} value={item} />
-                  ))}
-                </datalist>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">เลขทะเบียน</label>
-                <input
-                  type="text"
-                  value={editingRecord.accession_no}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, accession_no: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono"
-                />
-              </div>
-
+              {/* 020 ISBN */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">020 ISBN</label>
                 <input
                   type="text"
-                  value={editingRecord.isbn}
+                  value={editingRecord.isbn || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, isbn: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-indigo-700"
+                  placeholder="เช่น 9786160401628"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-indigo-700 font-semibold focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
+              {/* 022 ISSN */}
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">100 ผู้แต่ง (ชื่อบุคคล)</label>
-                <AuthorInputWithSuggestions
-                  value={editingRecord.author_personal || ''}
-                  onChange={(val) => {
-                    const existingCutters = new Set(
-                      records
-                        .filter(r => r.id !== editingRecord.id && r.cutter_082b)
-                        .map(r => r.cutter_082b)
-                    );
-                    const res = getExistingOrCalculatedCutter(val, editingRecord.title_245a, records, existingCutters);
-                    setEditingRecord({
-                      ...editingRecord,
-                      author_personal: val,
-                      cutter_082b: res.cutter
-                    });
-                  }}
-                  onSelectAuthor={(selectedAuthor, calculatedCutter) => {
-                    const existingCutters = new Set(
-                      records
-                        .filter(r => r.id !== editingRecord.id && r.cutter_082b)
-                        .map(r => r.cutter_082b)
-                    );
-                    const res = getExistingOrCalculatedCutter(selectedAuthor, editingRecord.title_245a, records, existingCutters);
-                    const finalCutter = calculatedCutter || res.cutter;
-                    setEditingRecord({
-                      ...editingRecord,
-                      author_personal: selectedAuthor,
-                      cutter_082b: finalCutter
-                    });
-                    showToast(`👤 เลือกผู้แต่ง "${selectedAuthor}" และดึงเลขประจำหนังสือ "${finalCutter}" เรียบร้อย`);
-                  }}
-                  records={records}
-                  currentTitle={editingRecord.title_245a}
+                <label className="block font-semibold text-slate-700 mb-1">022 ISSN</label>
+                <input
+                  type="text"
+                  value={editingRecord.issn_022 && editingRecord.issn_022 !== '-' ? editingRecord.issn_022 : ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, issn_022: e.target.value })}
+                  placeholder="เช่น 0123-4567"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-700 focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
+              {/* 082 $a เลขหมู่หนังสือ (DDC) */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">082 $a เลขหมู่หนังสือ (DDC)</label>
                 <input
                   type="text"
-                  value={editingRecord.ddc_082a}
+                  value={editingRecord.ddc_082a || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, ddc_082a: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-emerald-700"
+                  placeholder="เช่น 158.1 หรือ ด หรือ ย"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono font-bold text-emerald-700 focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
+              {/* 082 $b เลขประจำหนังสือ (Cutter) */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-1.5">
@@ -3382,9 +3518,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 <div className="relative">
                   <input
                     type="text"
-                    value={editingRecord.cutter_082b}
+                    value={editingRecord.cutter_082b || ''}
                     onChange={(e) => setEditingRecord({ ...editingRecord, cutter_082b: e.target.value })}
-                    className="w-full p-2.5 bg-emerald-50/60 border border-emerald-200 rounded-xl font-mono font-bold text-emerald-800 pr-10"
+                    className="w-full p-2.5 bg-emerald-50/60 border border-emerald-200 rounded-xl font-mono font-bold text-emerald-800 pr-10 focus:ring-2 focus:ring-emerald-500"
                   />
                   {editingRecord.cutter_082b && editingRecord.cutter_082b !== '-' && (
                     <button
@@ -3399,40 +3535,81 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 </div>
               </div>
 
+              {/* 100 ผู้แต่ง (ชื่อบุคคล) */}
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">$b สำนักพิมพ์</label>
+                <label className="block font-semibold text-slate-700 mb-1">100 ผู้แต่ง (ชื่อบุคคล)</label>
+                <AuthorInputWithSuggestions
+                  value={editingRecord.author_personal || ''}
+                  onChange={(val) => {
+                    const existingCutters = new Set(
+                      records
+                        .filter(r => r.id !== editingRecord.id && r.cutter_082b)
+                        .map(r => r.cutter_082b)
+                    );
+                    const res = getExistingOrCalculatedCutter(val, editingRecord.title_245a, records, existingCutters);
+                    setEditingRecord({
+                      ...editingRecord,
+                      author_personal: val,
+                      cutter_082b: res.cutter
+                    });
+                  }}
+                  onSelectAuthor={(selectedAuthor, calculatedCutter) => {
+                    const existingCutters = new Set(
+                      records
+                        .filter(r => r.id !== editingRecord.id && r.cutter_082b)
+                        .map(r => r.cutter_082b)
+                    );
+                    const res = getExistingOrCalculatedCutter(selectedAuthor, editingRecord.title_245a, records, existingCutters);
+                    const finalCutter = calculatedCutter || res.cutter;
+                    setEditingRecord({
+                      ...editingRecord,
+                      author_personal: selectedAuthor,
+                      cutter_082b: finalCutter
+                    });
+                    showToast(`👤 เลือกผู้แต่ง "${selectedAuthor}" และดึงเลขประจำหนังสือ "${finalCutter}" เรียบร้อย`);
+                  }}
+                  records={records}
+                  currentTitle={editingRecord.title_245a}
+                />
+              </div>
+
+              {/* 245 $a : $b = 246 $a (ชื่อเรื่องเต็ม / ชื่อเรื่องคู่ขนาน) */}
+              <div className="sm:col-span-2 md:col-span-3">
+                <label className="block font-semibold text-slate-700 mb-1">245 $a : $b = 246 $a (ชื่อเรื่องเต็ม / ชื่อเรื่องคู่ขนาน)</label>
                 <input
                   type="text"
-                  list="publishers-options"
-                  value={editingRecord.publisher}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, publisher: e.target.value })}
-                  placeholder="พิมพ์หรือเลือกสำนักพิมพ์..."
+                  value={editingRecord.title_245a || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, title_245a: e.target.value })}
+                  placeholder="พิมพ์ชื่อเรื่องเต็ม..."
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 font-medium"
                 />
-                <datalist id="publishers-options">
-                  {allAvailablePublishers.map((item, idx) => (
-                    <option key={`dl_pub_${idx}`} value={item} />
-                  ))}
-                </datalist>
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">$a สถานที่พิมพ์</label>
+              {/* 245 $c ส่วนแจ้งความรับผิดชอบ */}
+              <div className="sm:col-span-2">
+                <label className="block font-semibold text-slate-700 mb-1">245 $c ส่วนแจ้งความรับผิดชอบ (ชื่อผู้แต่งอย่างเดียว ไม่ใส่ชื่อผู้วาดภาพประกอบ และชื่อผู้แปล)</label>
                 <input
                   type="text"
-                  list="pub-places-options"
-                  value={editingRecord.pub_place}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, pub_place: e.target.value })}
-                  placeholder="พิมพ์หรือเลือกสถานที่พิมพ์..."
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
+                  value={editingRecord.responsibility_245c || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, responsibility_245c: e.target.value })}
+                  placeholder="เช่น Robert T. Kiyosaki."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
                 />
-                <datalist id="pub-places-options">
-                  {allAvailablePubPlaces.map((item, idx) => (
-                    <option key={`dl_place_${idx}`} value={item} />
-                  ))}
-                </datalist>
               </div>
 
+              {/* 246 (Ind1=3, Ind2=1) $a :$b */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">246 (Ind1=3, Ind2=1) $a :$b (ชื่อเรื่องคู่ขนาน/ภาษาอังกฤษ)</label>
+                <input
+                  type="text"
+                  value={editingRecord.title_245b || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, title_245b: e.target.value })}
+                  placeholder="$aTitle :$bSubtitle."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-emerald-800 focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* 250 พิมพ์ครั้งที่ (Edition) */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">250 พิมพ์ครั้งที่ (Edition)</label>
                 <input
@@ -3460,26 +3637,67 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                 </datalist>
               </div>
 
+              {/* 260 $a สถานที่พิมพ์ */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">$a สถานที่พิมพ์ (260 $a)</label>
+                <input
+                  type="text"
+                  list="pub-places-options"
+                  value={editingRecord.pub_place || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, pub_place: e.target.value })}
+                  placeholder="พิมพ์หรือเลือกสถานที่พิมพ์..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
+                />
+                <datalist id="pub-places-options">
+                  {allAvailablePubPlaces.map((item, idx) => (
+                    <option key={`dl_place_${idx}`} value={item} />
+                  ))}
+                </datalist>
+              </div>
+
+              {/* 260 $b สำนักพิมพ์ */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">$b สำนักพิมพ์ (260 $b)</label>
+                <input
+                  type="text"
+                  list="publishers-options"
+                  value={editingRecord.publisher || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, publisher: e.target.value })}
+                  placeholder="พิมพ์หรือเลือกสำนักพิมพ์..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 font-medium"
+                />
+                <datalist id="publishers-options">
+                  {allAvailablePublishers.map((item, idx) => (
+                    <option key={`dl_pub_${idx}`} value={item} />
+                  ))}
+                </datalist>
+              </div>
+
+              {/* 260 $c ปีที่พิมพ์ */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">260 $c ปีที่พิมพ์</label>
                 <input
                   type="text"
-                  value={editingRecord.pub_year}
+                  value={editingRecord.pub_year || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, pub_year: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono"
+                  placeholder="เช่น 2567"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
+              {/* 300 $a จำนวนหน้า */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">300 $a จำนวนหน้า</label>
                 <input
                   type="text"
-                  value={editingRecord.pages_300a}
+                  value={editingRecord.pages_300a || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, pages_300a: e.target.value })}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                  placeholder="เช่น 180 หน้า"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
+              {/* 300 $b ภาพประกอบ */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">300 $b ภาพประกอบ</label>
                 <input
@@ -3487,12 +3705,79 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                   value={editingRecord.illustration_300b || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, illustration_300b: e.target.value })}
                   placeholder="เช่น ภาพประกอบ, ภาพประกอบ (สี)"
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
-              <div className="sm:col-span-2">
-                <label className="block font-semibold text-slate-700 mb-1">650 $a หัวเรื่อง 1 (จาก MARC Tag 650 ของเล่มนี้)</label>
+              {/* 300 $c ขนาดเล่ม */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">300 $c ขนาดเล่ม</label>
+                <input
+                  type="text"
+                  value={editingRecord.dimensions_300c || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, dimensions_300c: e.target.value })}
+                  placeholder="เช่น 20 ซม. หรือ 21x29 ซม."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* 490 ชุด / ซีรีส์ */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">490 ชุด / ซีรีส์</label>
+                <input
+                  type="text"
+                  list="series-490-options"
+                  value={editingRecord.series_490 || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, series_490: e.target.value })}
+                  placeholder="พิมพ์หรือเลือกชุด/ซีรีส์..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
+                />
+                <datalist id="series-490-options">
+                  {allAvailableSeries490.map((item, idx) => (
+                    <option key={`dl_490_${idx}`} value={item} />
+                  ))}
+                </datalist>
+              </div>
+
+              {/* 505 สารบัญเนื้อหาในเล่ม */}
+              <div className="sm:col-span-2 md:col-span-3">
+                <label className="block font-semibold text-slate-700 mb-1">505 สารบัญเนื้อหาในเล่ม</label>
+                <textarea
+                  value={editingRecord.note_contents_505 && editingRecord.note_contents_505 !== '-' ? editingRecord.note_contents_505 : ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, note_contents_505: e.target.value })}
+                  rows={2}
+                  placeholder="เช่น บทที่ 1 ความเป็นมา -- บทที่ 2 ทฤษฎีและแนวคิด -- บทที่ 3 สรุปผล..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* 520 เรื่องย่อ */}
+              <div className="sm:col-span-2 md:col-span-3">
+                <label className="block font-semibold text-slate-700 mb-1">520 เรื่องย่อ</label>
+                <textarea
+                  value={editingRecord.summary_520 || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, summary_520: e.target.value })}
+                  rows={2}
+                  placeholder="พิมพ์เรื่องย่อ..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* 541 ราคา (บาท) */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">541 ราคา (บาท)</label>
+                <input
+                  type="text"
+                  value={editingRecord.price_541 || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, price_541: e.target.value })}
+                  placeholder="เช่น 250 หรือ -"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-emerald-700 focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* 650 $a หัวเรื่อง 1 */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">650 $a หัวเรื่อง 1</label>
                 {(() => {
                   const recordMarc650s = Array.isArray(editingRecord.marc_tags)
                     ? editingRecord.marc_tags
@@ -3500,21 +3785,21 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                         .map((t: any) => parseMarcSubfield(t.data || '', 'a') || t.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim())
                         .filter((s): s is string => Boolean(s && s !== '-'))
                     : [];
-                  const uniqueMarc650s: string[] = Array.from(new Set([...recordMarc650s, editingRecord.subject_650_2].filter((s): s is string => Boolean(s && s !== '-'))));
+                  const uniqueMarc650s: string[] = Array.from(new Set([...recordMarc650s, editingRecord.subject_650_2, editingRecord.subject_650_3].filter((s): s is string => Boolean(s && s !== '-'))));
 
                   return (
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       {uniqueMarc650s.length > 0 && (
-                        <div className="flex flex-wrap gap-1.5 items-center">
-                          <span className="text-[11px] text-slate-500 font-medium">หัวเรื่องใน MARC:</span>
+                        <div className="flex flex-wrap gap-1 items-center">
+                          <span className="text-[10px] text-slate-500 font-medium">ใน MARC:</span>
                           {uniqueMarc650s.map((subj, idx) => (
                             <button
                               key={`emarc_${idx}`}
                               type="button"
                               onClick={() => setEditingRecord({ ...editingRecord, subject_650a: subj })}
-                              className={`px-2 py-0.5 rounded-lg text-xs font-medium border transition ${
+                              className={`px-1.5 py-0.5 rounded text-[11px] font-medium border transition cursor-pointer ${
                                 editingRecord.subject_650a === subj
-                                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                                  ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
                                   : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
                               }`}
                             >
@@ -3526,24 +3811,134 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                       <input
                         type="text"
                         list="subject-headings-list"
-                        value={editingRecord.subject_650a}
+                        value={editingRecord.subject_650a || ''}
                         onChange={(e) => setEditingRecord({ ...editingRecord, subject_650a: e.target.value })}
-                        placeholder="ระบุหรือแก้ไขหัวเรื่อง..."
+                        placeholder="ระบุหัวเรื่องที่ 1..."
                         className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
                       />
-                      <datalist id="subject-headings-list">
-                        {allAvailableSubjects.map((s, idx) => (
-                          <option key={`dl_subj_${idx}`} value={s} />
-                        ))}
-                      </datalist>
                     </div>
                   );
                 })()}
               </div>
 
+              {/* 650 หัวเรื่อง 2 */}
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">สถานที่จัดเก็บ</label>
-                <div className="space-y-1.5">
+                <label className="block font-semibold text-slate-700 mb-1">650 หัวเรื่อง 2</label>
+                <input
+                  type="text"
+                  list="subject-headings-list"
+                  value={editingRecord.subject_650_2 && editingRecord.subject_650_2 !== '-' ? editingRecord.subject_650_2 : ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, subject_650_2: e.target.value })}
+                  placeholder="ระบุหัวเรื่องที่ 2 (ถ้ามี)..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* 650 หัวเรื่อง 3 */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">650 หัวเรื่อง 3</label>
+                <input
+                  type="text"
+                  list="subject-headings-list"
+                  value={editingRecord.subject_650_3 && editingRecord.subject_650_3 !== '-' ? editingRecord.subject_650_3 : ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, subject_650_3: e.target.value })}
+                  placeholder="ระบุหัวเรื่องที่ 3 (ถ้ามี)..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* Datalist for Subject Headings */}
+              <datalist id="subject-headings-list">
+                {allAvailableSubjects.map((s, idx) => (
+                  <option key={`dl_subj_${idx}`} value={s} />
+                ))}
+              </datalist>
+
+              {/* 700 ผู้ร่วมรับผิดชอบ / บทบาทหน้าที่ */}
+              <div className="sm:col-span-2 md:col-span-3 bg-gradient-to-br from-indigo-50/70 via-white to-purple-50/40 p-3.5 rounded-2xl border border-indigo-100 shadow-xs space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="px-2 py-0.5 rounded-lg bg-indigo-600 text-white text-xs font-bold">700</span>
+                    <label className="font-bold text-slate-800 text-xs">
+                      700 ผู้ร่วมรับผิดชอบ / บทบาทหน้าที่ (ผู้แต่ง, บรรณาธิการ, ผู้แปล, ผู้วาดภาพประกอบ, ผู้รวบรวม, ช่างภาพ ฯลฯ)
+                    </label>
+                  </div>
+                  {editingRecord.added_entry_700 && editingRecord.added_entry_700 !== '-' && (
+                    <span className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-indigo-100/90 text-indigo-900 border border-indigo-200 flex items-center gap-1 shadow-2xs">
+                      <span>🏷️ บทบาทปัจจุบัน:</span>
+                      <strong className="text-indigo-950 font-bold">
+                        {parseAddedEntry700Parts(editingRecord.added_entry_700).role || 'ระบุเอง'}
+                      </strong>
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      list="translators-700-options"
+                      value={editingRecord.added_entry_700 || ''}
+                      onChange={(e) => setEditingRecord({ ...editingRecord, added_entry_700: e.target.value })}
+                      onBlur={(e) => {
+                        const val = e.target.value.trim();
+                        if (val && val !== '-') {
+                          const parsed = parseAddedEntry700Parts(val);
+                          if (parsed.formatted && parsed.formatted !== val && parsed.role) {
+                            setEditingRecord({ ...editingRecord, added_entry_700: parsed.formatted });
+                          }
+                        }
+                      }}
+                      placeholder="พิมพ์ชื่อพร้อมบทบาท เช่น กิตติพงศ์, ผู้แต่ง. หรือ วิเชียร, บรรณาธิการ. หรือ Robert T. Kiyosaki, ผู้แต่ง."
+                      className="w-full p-2.5 bg-white border border-slate-200 rounded-xl font-medium text-indigo-950 placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500 text-xs shadow-2xs"
+                    />
+                    <datalist id="translators-700-options">
+                      {allAvailableTranslators700.map((item, idx) => (
+                        <option key={`dl_700_${idx}`} value={item} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  {/* Dropdown Role Selector */}
+                  <div className="w-full sm:w-56 shrink-0">
+                    <select
+                      value={parseAddedEntry700Parts(editingRecord.added_entry_700 || '').role || ''}
+                      onChange={(e) => {
+                        const chosenRole = e.target.value;
+                        const updated = attachRoleToAddedEntry700(editingRecord.added_entry_700 || '', chosenRole);
+                        setEditingRecord({ ...editingRecord, added_entry_700: updated });
+                      }}
+                      title="เลือกบทบาทหน้าที่สำหรับ Tag 700"
+                      className="w-full p-2.5 bg-white border border-indigo-200 text-indigo-900 font-semibold rounded-xl text-xs hover:border-indigo-400 focus:ring-2 focus:ring-indigo-500 cursor-pointer shadow-2xs transition"
+                    >
+                      <option value="">⚙️ เลือกบทบาทหน้าที่...</option>
+                      {STANDARD_700_ROLES_LIST.map((role) => (
+                        <option key={`opt_role_${role}`} value={role}>
+                          , {role}.
+                        </option>
+                      ))}
+                      <option value="__CLEAR__">✕ นำบทบาทออก (ชื่ออย่างเดียว)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* เลขทะเบียน (Accession No.) */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">เลขทะเบียน (Accession No.)</label>
+                <input
+                  type="text"
+                  value={editingRecord.accession_no || ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, accession_no: e.target.value })}
+                  placeholder="เช่น 0000000001"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* สถานที่จัดเก็บ (Storage Location) */}
+              <div className="sm:col-span-2">
+                <label className="block font-semibold text-slate-700 mb-1">สถานที่จัดเก็บ (Storage Location)</label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <select
                     value={allAvailableStorageLocations.includes(editingRecord.storage_location) ? editingRecord.storage_location : ''}
                     onChange={(e) => {
@@ -3560,7 +3955,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                         }
                       }
                     }}
-                    className="w-full p-2 bg-slate-100 border border-slate-200 rounded-xl text-xs text-slate-700 font-medium"
+                    className="w-full p-2.5 bg-slate-100 border border-slate-200 rounded-xl text-xs text-slate-700 font-medium focus:ring-2 focus:ring-emerald-500 cursor-pointer"
                   >
                     <option value="">-- เลือกจากสถานที่จัดเก็บในระบบ --</option>
                     {allAvailableStorageLocations.map(loc => (
@@ -3569,7 +3964,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                   </select>
                   <input
                     type="text"
-                    value={editingRecord.storage_location}
+                    value={editingRecord.storage_location || ''}
                     onChange={(e) => {
                       const newLoc = e.target.value;
                       const autoDdc = getAutoDdcForStorageLocation(newLoc);
@@ -3579,136 +3974,106 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                         ...(autoDdc ? { ddc_082a: autoDdc } : {})
                       });
                     }}
-                    placeholder="พิมพ์หรือเลือกสถานที่จัดเก็บ..."
-                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium"
+                    placeholder="หรือพิมพ์ระบุสถานที่จัดเก็บ..."
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
                   />
                 </div>
               </div>
 
-              <div className="sm:col-span-2 md:col-span-3">
-                <label className="block font-semibold text-slate-700 mb-1">520 เรื่องย่อ</label>
-                <textarea
-                  value={editingRecord.summary_520}
-                  onChange={(e) => setEditingRecord({ ...editingRecord, summary_520: e.target.value })}
-                  rows={2}
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl"
-                />
-              </div>
+              {/* วางลิงก์ภาพหน้าปกเอง: เพื่อดึงรูปปกมาด้วย (Cover image URL & Instant Preview) */}
+              <div className="sm:col-span-2 md:col-span-3 bg-gradient-to-r from-amber-50/70 via-white to-emerald-50/50 p-4 rounded-2xl border border-amber-200/80 shadow-2xs space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 rounded-lg bg-amber-500 text-white">
+                      <ImageIcon className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h4 className="font-bold text-slate-900 text-xs sm:text-sm">
+                        วางลิงก์ภาพหน้าปกเอง: เพื่อดึงรูปปกมาด้วย (MARC 856 $u / รูปปก)
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        วาง URL ลิงก์รูปภาพหน้าปก (.jpg, .png, .webp) หรือกดปุ่มดึงปกหนังสือจริงด้วย AI
+                      </p>
+                    </div>
+                  </div>
+                  {editingRecord.cover_image && editingRecord.cover_image !== '-' && (
+                    <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                      <span>✓ ดึงรูปปกสำเร็จ</span>
+                    </span>
+                  )}
+                </div>
 
-              {/* Extended MARC21 Tags Section */}
-              <div className="sm:col-span-2 md:col-span-3 pt-3 border-t border-slate-200">
-                <h4 className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                  <span>ข้อมูล MARC 21 Tags เพิ่มเติม (Extended MARC 21 Fields)</span>
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 bg-slate-50 p-3 rounded-2xl border border-slate-200">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Leader (000 LDR)</label>
-                    <input
-                      type="text"
-                      value={editingRecord.leader_000 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, leader_000: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
-                    />
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+                  <div className="md:col-span-9 space-y-2">
+                    <div className="relative">
+                      <input
+                        type="url"
+                        value={editingRecord.cover_image || (editingRecord.electronic_856 && editingRecord.electronic_856.startsWith('http') ? editingRecord.electronic_856 : '')}
+                        onChange={(e) => {
+                          const val = e.target.value.trim();
+                          setEditingRecord({
+                            ...editingRecord,
+                            cover_image: val,
+                            electronic_856: val || '-'
+                          });
+                        }}
+                        placeholder="วางลิงก์รูปภาพ เช่น https://covers.openlibrary.org/b/isbn/...-M.jpg หรือลิงก์ภาพอื่น..."
+                        className="w-full p-2.5 pl-3 bg-white border border-slate-300 rounded-xl text-xs font-mono text-slate-900 focus:ring-2 focus:ring-amber-500 shadow-2xs"
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        disabled={isFetchingAiCover || (!editingRecord.isbn && !editingRecord.title_245a)}
+                        onClick={handleFetchAiCover}
+                        className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-gradient-to-r from-purple-600 via-indigo-600 to-amber-600 hover:from-purple-700 hover:to-indigo-700 text-white shadow-sm transition cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                        title="ค้นหาและดึงรูปภาพปกจริงจาก Google Books, AI และ OpenLibrary อัตโนมัติ"
+                      >
+                        <Sparkles className={`w-3.5 h-3.5 text-amber-200 ${isFetchingAiCover ? 'animate-spin' : ''}`} />
+                        <span>{isFetchingAiCover ? 'กำลังดึงปกจริงด้วย AI...' : 'ดึงปกหนังสือจริงด้วย AI'}</span>
+                      </button>
+                      {editingRecord.cover_image && editingRecord.cover_image !== '-' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingRecord({
+                              ...editingRecord,
+                              cover_image: '',
+                              electronic_856: '-'
+                            });
+                            showToast(`✕ ลบลิงก์รูปปกแล้ว`);
+                          }}
+                          className="px-2 py-1 rounded-lg text-[11px] font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 transition cursor-pointer"
+                        >
+                          ✕ ลบรูปปก
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">001 Bib ID</label>
-                    <input
-                      type="text"
-                      value={editingRecord.control_001 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, control_001: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">008 Fixed Length</label>
-                    <input
-                      type="text"
-                      value={editingRecord.fixed_008 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, fixed_008: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">022 ISSN</label>
-                    <input
-                      type="text"
-                      value={editingRecord.issn_022 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, issn_022: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">246 ชื่อเรื่องคู่ขนาน/ที่แตกต่าง</label>
-                    <input
-                      type="text"
-                      value={editingRecord.title_varying_246 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, title_varying_246: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">300 $c ขนาดเล่ม</label>
-                    <input
-                      type="text"
-                      value={editingRecord.dimensions_300c || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, dimensions_300c: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">500 หมายเหตุทั่วไป</label>
-                    <input
-                      type="text"
-                      value={editingRecord.note_general_500 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, note_general_500: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">505 สารบัญเนื้อหา</label>
-                    <input
-                      type="text"
-                      value={editingRecord.note_contents_505 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, note_contents_505: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">650 หัวเรื่อง 2</label>
-                    <input
-                      type="text"
-                      value={editingRecord.subject_650_2 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, subject_650_2: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">830 ชื่อชุดแบบฉบับ</label>
-                    <input
-                      type="text"
-                      value={editingRecord.series_uniform_830 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, series_uniform_830: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">856 $u ลิงก์รูปภาพ/เอกสาร</label>
-                    <input
-                      type="text"
-                      value={editingRecord.electronic_856 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, electronic_856: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">907 เลขระเบียนท้องถิ่น</label>
-                    <input
-                      type="text"
-                      value={editingRecord.local_907 || ''}
-                      onChange={(e) => setEditingRecord({ ...editingRecord, local_907: e.target.value })}
-                      className="w-full p-2 bg-white border border-slate-200 rounded-lg font-mono text-xs"
-                    />
+
+                  {/* Thumbnail Preview Area */}
+                  <div className="md:col-span-3 flex justify-center md:justify-end">
+                    {editingRecord.cover_image && editingRecord.cover_image !== '-' ? (
+                      <div className="relative group">
+                        <img
+                          src={editingRecord.cover_image}
+                          alt="พรีวิวรูปปก"
+                          className="w-20 h-28 object-cover rounded-xl shadow-md border-2 border-amber-400 bg-white"
+                          onError={(e: any) => {
+                            e.currentTarget.onerror = null;
+                            e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
+                          }}
+                        />
+                        <span className="absolute bottom-1 inset-x-1 text-[9px] text-center font-bold bg-black/70 text-white rounded px-1 py-0.5 truncate">
+                          พรีวิวรูปปก
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="w-20 h-28 border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center p-2 text-center text-slate-400 bg-slate-50/70">
+                        <ImageIcon className="w-6 h-6 mb-1 opacity-40 text-slate-500" />
+                        <span className="text-[10px] font-medium leading-tight">ยังไม่มีรูปปก</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3732,11 +4097,54 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ onBookAddedToL
                     if (idx250 >= 0) updatedTags[idx250] = tagObj;
                     else updatedTags.push(tagObj);
                   }
+                  if (editingRecord.added_entry_700 && editingRecord.added_entry_700 !== '-') {
+                    const idx700 = updatedTags.findIndex(t => t.tagID === '700' || (t as any).tag === '700');
+                    const tagObj = { tagID: '700', indc1: '1', indc2: '', data: `$a${editingRecord.added_entry_700}` };
+                    if (idx700 >= 0) updatedTags[idx700] = tagObj;
+                    else updatedTags.push(tagObj);
+                  } else {
+                    updatedTags = updatedTags.filter(t => t.tagID !== '700' && (t as any).tag !== '700');
+                  }
+                  if (editingRecord.issn_022 && editingRecord.issn_022 !== '-') {
+                    const idx022 = updatedTags.findIndex(t => t.tagID === '022' || (t as any).tag === '022');
+                    const tagObj = { tagID: '022', indc1: '', indc2: '', data: `$a${editingRecord.issn_022}` };
+                    if (idx022 >= 0) updatedTags[idx022] = tagObj;
+                    else updatedTags.push(tagObj);
+                  }
+                  if (editingRecord.dimensions_300c && editingRecord.dimensions_300c !== '-') {
+                    const idx300 = updatedTags.findIndex(t => t.tagID === '300' || (t as any).tag === '300');
+                    const dimData = `$a${editingRecord.pages_300a || '180 หน้า'}${editingRecord.illustration_300b ? ` : $b${editingRecord.illustration_300b}` : ''} ; $c${editingRecord.dimensions_300c}`;
+                    if (idx300 >= 0) updatedTags[idx300] = { ...updatedTags[idx300], data: dimData };
+                    else updatedTags.push({ tagID: '300', indc1: '', indc2: '', data: dimData });
+                  }
+                  if (editingRecord.note_contents_505 && editingRecord.note_contents_505 !== '-') {
+                    const idx505 = updatedTags.findIndex(t => t.tagID === '505' || (t as any).tag === '505');
+                    const tagObj = { tagID: '505', indc1: '0', indc2: '', data: `$a${editingRecord.note_contents_505}` };
+                    if (idx505 >= 0) updatedTags[idx505] = tagObj;
+                    else updatedTags.push(tagObj);
+                  }
+                  // Update all 650 subject tags cleanly
+                  updatedTags = updatedTags.filter(t => t.tagID !== '650' && (t as any).tag !== '650');
+                  if (editingRecord.subject_650a && editingRecord.subject_650a !== '-' && editingRecord.subject_650a !== 'ทั่วไป') {
+                    updatedTags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${editingRecord.subject_650a}` });
+                  }
+                  if (editingRecord.subject_650_2 && editingRecord.subject_650_2 !== '-' && editingRecord.subject_650_2 !== 'ทั่วไป') {
+                    updatedTags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${editingRecord.subject_650_2}` });
+                  }
+                  if (editingRecord.subject_650_3 && editingRecord.subject_650_3 !== '-' && editingRecord.subject_650_3 !== 'ทั่วไป') {
+                    updatedTags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${editingRecord.subject_650_3}` });
+                  }
+                  if (editingRecord.cover_image && editingRecord.cover_image !== '-') {
+                    const idx856 = updatedTags.findIndex(t => t.tagID === '856' || (t as any).tag === '856');
+                    const tagObj = { tagID: '856', indc1: '4', indc2: '2', data: `$u${editingRecord.cover_image}` };
+                    if (idx856 >= 0) updatedTags[idx856] = tagObj;
+                    else updatedTags.push(tagObj);
+                  }
                   const finalRec = { ...editingRecord, marc_tags: updatedTags };
                   setRecords(prev => prev.map(item => item.id === finalRec.id ? finalRec : item));
                   await handleSyncToLibrary(finalRec);
                   setEditingRecord(null);
-                  showToast(`💾 บันทึกข้อมูลและพิมพ์ครั้งที่ "${finalRec.edition_250 || 'พิมพ์ครั้งที่ 1'}" เรียบร้อยแล้ว`);
+                  showToast(`💾 บันทึกข้อมูลบรรณานุกรม "${finalRec.title_245a.substring(0, 25)}..." เรียบร้อยแล้ว`);
                 }}
                 className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer flex items-center gap-1.5"
               >
