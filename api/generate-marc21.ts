@@ -1329,8 +1329,34 @@ export default async function handler(req: any, res: any) {
 
     for (let idx = 0; idx < itemsToProcess.length; idx++) {
       const q = itemsToProcess[idx];
-      const paddedAccNo = getNextUniqueAccession();
-      const cleanIsbnCandidate = q.replace(/[^0-9X]/gi, '');
+      let customAccNo = '';
+      let queryItem = q;
+      let directIsbn = '';
+      let directAuthor = '';
+      let directCorporate = '-';
+      let directTitle = '';
+
+      if (q.includes('\t')) {
+        const parts = q.split('\t').map((p: string) => p.trim());
+        if (/^(?:[0-9]{4,10}|B[0-9]{4,10})$/i.test(parts[0])) {
+          customAccNo = parts[0].padStart(10, '0');
+        }
+        for (const p of parts) {
+          const clean = p.replace(/[^0-9X]/gi, '');
+          if (clean.length === 10 || clean.length === 13) {
+            directIsbn = clean;
+            break;
+          }
+        }
+        if (parts.length >= 3 && parts[2] !== '-') directAuthor = parts[2];
+        if (parts.length >= 4 && parts[3] !== '-') directCorporate = parts[3];
+        if (parts.length >= 5) directTitle = parts[4];
+        else if (parts.length >= 4 && parts[3] !== '-') directTitle = parts[3];
+        queryItem = directIsbn || directTitle || q;
+      }
+
+      const paddedAccNo = customAccNo || getNextUniqueAccession();
+      const cleanIsbnCandidate = directIsbn || queryItem.replace(/[^0-9X]/gi, '');
       const isIsbn = cleanIsbnCandidate.length === 10 || cleanIsbnCandidate.length === 13;
 
       let matchedBook: any = null;

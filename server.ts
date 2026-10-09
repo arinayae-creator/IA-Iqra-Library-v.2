@@ -2127,9 +2127,11 @@ app.post('/api/books', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Title, Author and ISBN are required.' });
     }
 
-    // Support payload id, fall back to isbn-based generation if none provided
+    // Support payload id or accession-based generation, allowing multiple copies of the same ISBN
     const cleanIsbn = String(bookData.isbn || '').replace(/[^a-zA-Z0-9]/g, '');
-    const bookId = bookData.id || `book_${cleanIsbn || Date.now()}`;
+    const rawAcc = String(bookData.accession_no || bookData.barcode || '').trim();
+    const cleanAcc = rawAcc.replace(/[^a-zA-Z0-9]/g, '');
+    const bookId = bookData.id || (cleanAcc ? `book_reg_${cleanAcc}` : (cleanIsbn ? `book_${cleanIsbn}_${Date.now()}` : `book_${Date.now()}`));
 
     const data = {
       ...bookData,
@@ -2238,7 +2240,9 @@ app.post('/api/books/batch', async (req, res) => {
       }
 
       const cleanIsbn = String(b.isbn || '').replace(/[^a-zA-Z0-9]/g, '');
-      const bookId = `book_${cleanIsbn || `${Date.now()}_${i}`}`;
+      const rawAcc = String(b.accession_no || b.barcode || '').trim();
+      const cleanAcc = rawAcc.replace(/[^a-zA-Z0-9]/g, '');
+      const bookId = b.id || (cleanAcc ? `book_reg_${cleanAcc}` : (cleanIsbn ? `book_${cleanIsbn}_${i}_${Date.now()}` : `book_${Date.now()}_${i}`));
 
       const data = {
         id: bookId,

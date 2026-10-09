@@ -685,28 +685,53 @@ export function formatAccessionNo(acc?: string): string {
 }
 
 export function extractVolumeFromTitle(title?: string, subtitle?: string, extra?: string): string {
-  const fullText = `${title || ''} ${subtitle || ''} ${extra || ''}`.trim();
-  if (!fullText) return '-';
-
   const thaiToArabic: Record<string, string> = {
     '๐': '0', '๑': '1', '๒': '2', '๓': '3', '๔': '4',
     '๕': '5', '๖': '6', '๗': '7', '๘': '8', '๙': '9'
   };
-  const normalized = fullText.replace(/[๐-๙]/g, d => thaiToArabic[d] || d);
+  const normalize = (str?: string) => String(str || '').replace(/[๐-๙]/g, d => thaiToArabic[d] || d).trim();
 
-  const patterns = [
+  const normTitle = normalize(title);
+  const normSub = normalize(subtitle);
+  const normExtra = normalize(extra);
+  const fullText = `${normTitle} ${normSub} ${normExtra}`.trim();
+  if (!fullText) return '-';
+
+  // 1. Explicit keyword matches (เล่ม, เล่มที่, vol, volume, part, ภาค, ตอน, book)
+  const explicitPatterns = [
     /(?:เล่มที่|เล่ม\s*ที่|เล่ม|ล\.)\s*([0-9]+)/i,
-    /(?:ฉบับที่)\s*([0-9]+)/i,
     /(?:vol(?:ume)?\.?|v\.)\s*([0-9]+)/i,
     /(?:part|pt\.)\s*([0-9]+)/i,
     /(?:ภาคที่|ภาค|ตอนที่|ตอน)\s*([0-9]+)/i,
     /(?:book|bk\.)\s*([0-9]+)/i
   ];
 
-  for (const regex of patterns) {
-    const match = normalized.match(regex);
+  for (const regex of explicitPatterns) {
+    const match = fullText.match(regex);
     if (match && match[1]) {
-      return match[1];
+      const num = parseInt(match[1], 10);
+      if (num > 0 && num < 1000) return String(num);
+    }
+  }
+
+  // 2. Trailing number at the end of the main title (before ':', '=', '/', or end of title)
+  // e.g. 'ปีศาจตัวนั้น คือฉันเอง 2 : ไม่มีใครจัดการปีศาจในใจเราได้นอกจากตัวเราเอง' -> 2
+  const mainPart = normTitle.split(/[:=\/]/)[0].trim();
+  const trailingNumMatch = mainPart.match(/^(?:.*[^\d\s])\s+([0-9]{1,3})\s*$/);
+  if (trailingNumMatch && trailingNumMatch[1]) {
+    const num = parseInt(trailingNumMatch[1], 10);
+    // Exclude 4-digit years or excessively large numbers
+    if (num > 0 && num < 500) {
+      return String(num);
+    }
+  }
+
+  // 3. Parenthesized trailing number: e.g. 'ชื่อเรื่อง (2)'
+  const parenMatch = mainPart.match(/\(([0-9]{1,3})\)\s*$/);
+  if (parenMatch && parenMatch[1]) {
+    const num = parseInt(parenMatch[1], 10);
+    if (num > 0 && num < 500) {
+      return String(num);
     }
   }
 
@@ -2067,6 +2092,108 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     e.preventDefault();
     const lines = batchQueries.split('\n').map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) return;
+
+    // Check if pasted lines contain TSV columns (e.g. copied from Excel/Sheets)
+    const hasTsv = lines.some(l => l.includes('\t'));
+    if (hasTsv) {
+      const parsedRecords: Marc21Record[] = [];
+      let nextAcc = startAccNum;
+      const existingUsed = new Set(records.map(r => parseInt(r.accession_no, 10)).filter(n => !isNaN(n)));
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const parts = line.split('\t').map(p => p.trim());
+
+        let accNo = '';
+        let isbn = '';
+        let authorPersonal = '';
+        let authorCorporate = '-';
+        let title = '';
+
+        if (parts.length >= 2) {
+          if (/^(?:[0-9]{4,10}|B[0-9]{4,10})$/i.test(parts[0])) {
+            accNo = parts[0];
+          }
+          for (const p of parts) {
+            const clean = p.replace(/[^0-9X]/gi, '');
+            if (clean.length === 10 || clean.length === 13) {
+              isbn = clean;
+              break;
+            }
+          }
+          if (parts.length >= 3 && parts[2] !== '-') {
+            authorPersonal = parts[2];
+          }
+          if (parts.length >= 4 && parts[3] !== '-') {
+            authorCorporate = parts[3];
+          }
+          if (parts.length >= 5) {
+            title = parts[4];
+          } else if (parts.length >= 4 && parts[3] !== '-') {
+            title = parts[3];
+          } else {
+            title = parts[parts.length - 1];
+          }
+        }
+
+        if (!accNo) {
+          while (nextAcc <= 2612 || existingUsed.has(nextAcc)) {
+            nextAcc++;
+          }
+          accNo = String(nextAcc).padStart(10, '0');
+          existingUsed.add(nextAcc);
+          nextAcc++;
+        }
+
+        const authorGuess = authorPersonal || (authorCorporate !== '-' ? authorCorporate : 'ไม่ระบุผู้แต่ง');
+        const titleClean = title || line;
+        const cutterGuess = generateThaiCutter(authorGuess, titleClean);
+        const ddcGuess = isbn ? '000' : (titleClean.includes('นิทาน') ? 'ด' : (titleClean.includes('การ์ตูน') ? 'ย' : '000'));
+
+        const newRec: Marc21Record = {
+          id: `rec_tsv_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`,
+          date: new Date().toLocaleDateString('th-TH'),
+          col1: '',
+          accession_no: accNo.padStart(10, '0'),
+          isbn: isbn,
+          author_personal: authorPersonal ? `${authorPersonal.replace(/\.$/, '')}.` : '-',
+          author_corporate: authorCorporate,
+          title_245a: titleClean,
+          title_245b: '-',
+          responsibility_245c: authorGuess,
+          ddc_082a: ddcGuess,
+          cutter_082b: cutterGuess,
+          pub_place: 'กรุงเทพฯ',
+          publisher: 'ไม่ระบุสำนักพิมพ์',
+          pub_year: '2567',
+          pages_300a: '160 หน้า',
+          illustration_300b: 'ภาพประกอบ',
+          subject_650a: 'ทั่วไป',
+          copies: '1',
+          summary_520: `รายการบรรณานุกรม ${titleClean}`,
+          edition_250: 'พิมพ์ครั้งที่ 1',
+          price_541: '-',
+          series_490: '-',
+          added_entry_700: '-',
+          acquisition_source: 'สั่งซื้อ',
+          col2: '',
+          source_type: 'สั่งชื้อ',
+          storage_location: ddcGuess === 'ด' ? 'สำหรับเด็ก' : (ddcGuess === 'ย' ? 'เยาวชน' : 'หมวด ทั่วไป'),
+          status: 'อยู่บนชั้น',
+          col3: '',
+          search_source: 'นำเข้าจากข้อมูลที่วาง (TSV/Excel)'
+        };
+        parsedRecords.push(newRec);
+      }
+
+      setRecords(prev => [...parsedRecords, ...prev]);
+      setStartAccNum(nextAcc);
+      showToast(`✨ นำเข้าข้อมูลตารางสำเร็จ ${parsedRecords.length} รายการ (รักษาเลขทะเบียนเดิมและ ISBN ซ้ำได้สมบูรณ์)`);
+      setBatchQueries('');
+      setIsBatchOpen(false);
+      return;
+    }
+
     handleGenerate(lines);
   };
 
@@ -2261,36 +2388,27 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     const cleanAuthor = r.author_personal.replace(/\.$/, '').trim();
     const cleanIsbn = r.isbn ? r.isbn.trim() : '';
 
-    // 1. Resolve or reuse stable database primary key
+    // 1. Resolve or reuse stable database primary key based on accession number
     let targetBookId = r.db_id || '';
+    const rawAcc = String(r.accession_no || '').trim();
+    const cleanAcc = rawAcc.replace(/^0+/, '') || rawAcc;
 
-    if (!targetBookId) {
-      if (cleanIsbn) {
-        const { data: isbnMatches } = await supabase
-          .from('books')
-          .select('id')
-          .eq('isbn', cleanIsbn)
-          .limit(1);
-        if (isbnMatches && isbnMatches.length > 0) {
-          targetBookId = isbnMatches[0].id;
-        }
-      }
-
-      if (!targetBookId && cleanTitle) {
-        const { data: titleMatches } = await supabase
-          .from('books')
-          .select('id')
-          .eq('title', cleanTitle)
-          .limit(1);
-        if (titleMatches && titleMatches.length > 0) {
-          targetBookId = titleMatches[0].id;
-        }
+    if (!targetBookId && rawAcc) {
+      // Check if this specific accession number already exists in database
+      const { data: accMatches } = await supabase
+        .from('books')
+        .select('id')
+        .or(`accession_no.eq.${rawAcc},barcode.eq.${rawAcc}`)
+        .limit(1);
+      if (accMatches && accMatches.length > 0) {
+        targetBookId = accMatches[0].id;
+      } else {
+        targetBookId = `book_reg_${cleanAcc}`;
       }
     }
 
     if (!targetBookId) {
-      const cleanAcc = r.accession_no ? r.accession_no.replace(/^0+/, '') : '';
-      targetBookId = `book_reg_${cleanAcc || Date.now()}`;
+      targetBookId = `book_reg_${cleanAcc || (cleanIsbn ? `${cleanIsbn}_${Date.now()}` : `${Date.now()}`)}`;
     }
 
     r.db_id = targetBookId;
@@ -2390,26 +2508,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       updated_at: payload.updated_at
     };
 
-    // 2. Clean up any existing duplicate rows in Supabase with the same title but different ID (e.g. old accession_no IDs)
-    try {
-      if (cleanTitle) {
-        const { data: dupRows } = await supabase
-          .from('books')
-          .select('id')
-          .eq('title', cleanTitle)
-          .neq('id', targetBookId);
-
-        if (dupRows && dupRows.length > 0) {
-          const dupIds = dupRows.map(d => d.id);
-          await supabase.from('books').delete().in('id', dupIds);
-          await supabase.from('book_customizations').delete().in('id', dupIds);
-        }
-      }
-    } catch (e) {
-      console.warn('Deduplication cleanup note:', e);
-    }
-
-    // 3. Upsert clean payload into Supabase
+    // 2. Upsert clean payload into Supabase (each accession_no is a distinct copy)
     try {
       const { error: sbErr } = await supabase.from('books').upsert(supabasePayload, { onConflict: 'id' });
       if (sbErr) {
