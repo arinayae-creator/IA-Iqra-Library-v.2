@@ -671,15 +671,16 @@ export const formatCleanMarc245Title = (rawA: string, rawB: string, raw246: stri
   return { formatted245a, formatted245b };
 };
 
-export function formatAccessionNo(acc?: string): string {
-  if (!acc || acc === '-' || acc.trim() === '') return '-';
-  const clean = acc.trim();
-  if (/^b[0-9]+/i.test(clean)) {
-    const num = clean.slice(1);
-    return `B${num.padStart(10, '0')}`;
-  }
+export function formatAccessionNo(acc?: string | number | null): string {
+  if (acc === null || acc === undefined || acc === '-' || acc === '') return '-';
+  const clean = String(acc).trim();
+  if (!clean || clean === '-') return '-';
   if (/^[0-9]+$/.test(clean)) {
-    return `B${clean.padStart(10, '0')}`;
+    return clean.padStart(10, '0');
+  }
+  if (/^b[0-9]+$/i.test(clean)) {
+    const num = clean.slice(1);
+    return num.padStart(10, '0');
   }
   return clean;
 }
@@ -2448,8 +2449,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       subtitle: r.title_245b || '',
       author: cleanAuthor,
       isbn: cleanIsbn,
-      barcode: r.accession_no,
-      accession_no: r.accession_no,
+      barcode: formatAccessionNo(r.accession_no),
+      accession_no: formatAccessionNo(r.accession_no),
       publisher: r.publisher,
       publication_place: r.pub_place,
       publication_year: r.pub_year,
@@ -2486,8 +2487,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       subtitle: r.title_245b || null,
       author: cleanAuthor,
       isbn: cleanIsbn || null,
-      barcode: r.accession_no || null,
-      accession_no: r.accession_no || null,
+      barcode: formatAccessionNo(r.accession_no) || null,
+      accession_no: formatAccessionNo(r.accession_no) || null,
       publisher: r.publisher || null,
       publication_place: r.pub_place || null,
       publication_year: r.pub_year || null,
@@ -2948,7 +2949,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   className="p-3.5 bg-slate-800/90 border border-slate-700/80 rounded-2xl flex flex-col justify-between gap-3 hover:border-amber-400/60 transition shadow-sm"
                 >
                   <div className="flex items-start gap-3">
-                    {item.coverImage ? (
+                    {item.coverImage && item.coverImage.trim() !== '' ? (
                       <img
                         src={item.coverImage}
                         alt={item.title}
@@ -3407,7 +3408,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                                   ? 'text-rose-700 bg-rose-100 border border-rose-300' 
                                   : 'text-slate-900 bg-slate-100'
                               }`}>
-                                {r.accession_no}
+                                {formatAccessionNo(r.accession_no)}
                               </span>
                               {isDup && (
                                 <span className="text-[10px] font-bold text-rose-700 bg-rose-100 px-1 rounded" title="เลขทะเบียนนี้ซ้ำกับรายการอื่นในตาราง">
@@ -3423,14 +3424,20 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                       <td className="p-2.5 text-slate-600">{r.author_corporate}</td>
                       <td className="p-2.5 font-semibold text-slate-900 max-w-xs" title={r.title_245a}>
                         <div className="flex items-center gap-2 min-w-0">
-                          {(r.cover_image || (r.electronic_856 && r.electronic_856.startsWith('http'))) && (
-                            <img
-                              src={r.cover_image || r.electronic_856}
-                              alt=""
-                              className="w-6 h-8 object-cover rounded shadow-2xs border border-slate-200 shrink-0"
-                              onError={(e: any) => { e.currentTarget.style.display = 'none'; }}
-                            />
-                          )}
+                          {(() => {
+                            const coverUrl = (r.cover_image && r.cover_image.trim() !== '' && r.cover_image !== '-') 
+                              ? r.cover_image.trim() 
+                              : (r.electronic_856 && r.electronic_856.trim().startsWith('http') ? r.electronic_856.trim() : null);
+                            if (!coverUrl) return null;
+                            return (
+                              <img
+                                src={coverUrl}
+                                alt=""
+                                className="w-6 h-8 object-cover rounded shadow-2xs border border-slate-200 shrink-0"
+                                onError={(e: any) => { e.currentTarget.style.display = 'none'; }}
+                              />
+                            );
+                          })()}
                           <span className="truncate">{r.title_245a}</span>
                         </div>
                       </td>
@@ -4636,7 +4643,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
                   {/* Thumbnail Preview Area */}
                   <div className="md:col-span-3 flex justify-center md:justify-end">
-                    {editingRecord.cover_image && editingRecord.cover_image !== '-' ? (
+                    {editingRecord.cover_image && editingRecord.cover_image.trim() !== '' && editingRecord.cover_image !== '-' ? (
                       <div className="relative group">
                         <img
                           src={editingRecord.cover_image}
@@ -5478,7 +5485,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   {records.filter(r => selectedIds.has(r.id)).map((r, idx) => (
                     <div key={r.id} className="py-1.5 px-2 flex justify-between gap-2">
                       <span className="font-bold text-slate-800 truncate">{idx + 1}. {r.title_245a || 'ไม่ระบุชื่อเรื่อง'}</span>
-                      <span className="font-mono text-slate-500 shrink-0">{r.accession_no}</span>
+                      <span className="font-mono text-slate-500 shrink-0">{formatAccessionNo(r.accession_no)}</span>
                     </div>
                   ))}
                 </div>

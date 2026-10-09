@@ -89,7 +89,86 @@ interface Book {
   price?: string;
   composition_year?: string; // ปีแต่ง
   copies?: string | number; // จำนวนเล่ม
+  copy_count?: number; // จำนวนตัวเล่มทั้งหมดที่มีในระบบ
+  copies_list?: {
+    id: string;
+    accession_no: string;
+    barcode: string;
+    call_number: string;
+    status: string;
+    copy_no: number;
+    created_at?: string;
+  }[];
+  accession_numbers?: string[];
   [key: string]: any;
+}
+
+function groupBooksClient(rawBooks: Book[]): Book[] {
+  const groupMap = new Map<string, Book>();
+
+  for (const b of rawBooks) {
+    const cleanIsbn = String(b.isbn || '').replace(/[^0-9X]/gi, '');
+    const cleanTitle = String(b.title || '').replace(/[:=;/\\.,\s]/g, '').toLowerCase();
+    const groupKey = (cleanIsbn && cleanIsbn.length >= 8) 
+      ? `isbn_${cleanIsbn}` 
+      : (cleanTitle.length >= 3 ? `title_${cleanTitle}` : `id_${b.id}`);
+
+    const rawAcc = String(b.accession_no || b.barcode || b.id || '').trim();
+    const acc = formatAccessionNo(rawAcc);
+    const copyObj = {
+      id: b.id,
+      accession_no: acc,
+      barcode: b.barcode || acc,
+      call_number: b.call_number || '',
+      status: b.status || 'พร้อมให้บริการ',
+      copy_no: 1,
+      created_at: b.created_at
+    };
+
+    if (!groupMap.has(groupKey)) {
+      groupMap.set(groupKey, {
+        ...b,
+        accession_no: acc,
+        copy_count: 1,
+        copies_list: [copyObj],
+        accession_numbers: acc ? [acc] : []
+      });
+    } else {
+      const existing = groupMap.get(groupKey)!;
+      existing.copy_count = (existing.copy_count || 1) + 1;
+      if (!existing.copies_list) existing.copies_list = [];
+      existing.copies_list.push(copyObj);
+      if (!existing.accession_numbers) existing.accession_numbers = [];
+      if (acc && !existing.accession_numbers.includes(acc)) {
+        existing.accession_numbers.push(acc);
+      }
+      if ((!existing.cover_image || existing.cover_image === '-') && b.cover_image && b.cover_image !== '-') {
+        existing.cover_image = b.cover_image;
+      }
+      if (!existing.call_number && b.call_number) existing.call_number = b.call_number;
+    }
+  }
+
+  const parseAcc = (val: string) => {
+    const m = String(val).match(/\d+/);
+    return m ? parseInt(m[0], 10) : Infinity;
+  };
+
+  return Array.from(groupMap.values()).map(gb => {
+    if (gb.copies_list && Array.isArray(gb.copies_list)) {
+      gb.copies_list.sort((c1, c2) => {
+        const n1 = parseAcc(c1.accession_no);
+        const n2 = parseAcc(c2.accession_no);
+        if (n1 !== n2 && n1 !== Infinity && n2 !== Infinity) return n1 - n2;
+        return String(c1.accession_no).localeCompare(String(c2.accession_no));
+      });
+      gb.copies_list = gb.copies_list.map((c, idx) => ({
+        ...c,
+        copy_no: idx + 1
+      }));
+    }
+    return gb;
+  });
 }
 
 interface Category {
@@ -141,10 +220,20 @@ export default function App() {
   const [copiedCard, setCopiedCard] = useState<boolean>(false);
   const [isSavingCover, setIsSavingCover] = useState<boolean>(false);
   const [coverImageFailed, setCoverImageFailed] = useState<boolean>(false);
+  const [activeCopyId, setActiveCopyId] = useState<string | null>(null);
 
-  // Reset cover error status whenever opened book changes
+  // Reset cover error status and sync active copy whenever opened book changes
   useEffect(() => {
     setCoverImageFailed(false);
+    if (selectedBookDetail) {
+      if (selectedBookDetail.copies_list && selectedBookDetail.copies_list.length > 0) {
+        setActiveCopyId(selectedBookDetail.copies_list[0].id);
+      } else {
+        setActiveCopyId(selectedBookDetail.id);
+      }
+    } else {
+      setActiveCopyId(null);
+    }
   }, [selectedBookDetail?.id]);
 
   // Real-time states
@@ -200,9 +289,10 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(52);
   const [totalBooksCount, setTotalBooksCount] = useState<number>(0);
+  const [totalCopiesCount, setTotalCopiesCount] = useState<number>(0);
   const [sheetSyncInfo, setSheetSyncInfo] = useState<any>(null);
   const [isSyncingSheet, setIsSyncingSheet] = useState<boolean>(false);
-  const [customSheetUrl, setCustomSheetUrl] = useState<string>('https://docs.google.com/spreadsheets/d/1IXKv6ZCq5AdUxZcKYsUz1IY3uH9qBxnMTTuYgeT7RRg/edit?gid=889338917#gid=889338917');
+  const [customSheetUrl, setCustomSheetUrl] = useState<string>('https://docs.google.com/spreadsheets/d/1rq9LyA7pFXoQ0F-g_xH12ZHhS7ftzhgq/edit?usp=sharing&ouid=104504546234597964606&rtpof=true&sd=true');
   const [publishers, setPublishers] = useState<string[]>([]);
   const [selectedPublisher, setSelectedPublisher] = useState<string>('');
   const [enrichingBookId, setEnrichingBookId] = useState<string | null>(null);
@@ -679,8 +769,8 @@ export default function App() {
         const gidMatch = targetUrl.match(/gid=([0-9]+)/);
         if (idMatch) {
           const docId = idMatch[1];
-          const gid = gidMatch ? gidMatch[1] : '0';
-          targetUrl = `https://docs.google.com/spreadsheets/d/${docId}/export?format=csv&gid=${gid}`;
+          const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
+          targetUrl = `https://docs.google.com/spreadsheets/d/${docId}/export?format=csv${gidParam}`;
         }
       }
 
@@ -768,6 +858,9 @@ export default function App() {
             if (data.total !== undefined) {
               setTotalBooksCount(data.total);
             }
+            if (data.totalCopies !== undefined) {
+              setTotalCopiesCount(data.totalCopies);
+            }
             loadedFromApi = true;
           }
         }
@@ -777,7 +870,7 @@ export default function App() {
       if (!loadedFromApi) {
         console.log('[Supabase Direct] Using client-side memory engine from Supabase database...');
         const allBooks = await loadAllBooksIntoClientCache();
-        let filtered = [...allBooks];
+        let filtered = groupBooksClient(allBooks);
 
         if (selectedCategory) {
           filtered = filtered.filter(b => b.category === selectedCategory);
@@ -787,13 +880,23 @@ export default function App() {
         }
         if (searchQuery && searchQuery.trim()) {
           const q = searchQuery.trim().toLowerCase();
+          const qClean = q.replace(/^0+/, '');
+          const matchesAcc = (accVal: any) => {
+            if (!accVal) return false;
+            const str = String(accVal).toLowerCase();
+            if (str.includes(q)) return true;
+            if (qClean && str.replace(/^0+/, '').includes(qClean)) return true;
+            return false;
+          };
           filtered = filtered.filter(b => 
             (b.title && b.title.toLowerCase().includes(q)) || 
             (b.subtitle && b.subtitle.toLowerCase().includes(q)) ||
             (b.author && b.author.toLowerCase().includes(q)) || 
             (b.isbn && b.isbn.toLowerCase().includes(q)) || 
             (b.barcode && b.barcode.toLowerCase().includes(q)) ||
-            (b.accession_no && String(b.accession_no).toLowerCase().includes(q)) ||
+            matchesAcc(b.accession_no) ||
+            (Array.isArray(b.accession_numbers) && b.accession_numbers.some(acc => matchesAcc(acc))) ||
+            (Array.isArray(b.copies_list) && b.copies_list.some(c => matchesAcc(c.accession_no) || String(c.barcode || '').toLowerCase().includes(q))) ||
             (b.publisher && b.publisher.toLowerCase().includes(q)) ||
             (b.category && b.category.toLowerCase().includes(q)) ||
             (b.subject && b.subject.toLowerCase().includes(q)) ||
@@ -821,6 +924,7 @@ export default function App() {
         }
 
         setTotalBooksCount(filtered.length);
+        setTotalCopiesCount(allBooks.length);
         const startIndex = (page - 1) * pageSize;
         const pageItems = filtered.slice(startIndex, startIndex + pageSize);
         setBooks(pageItems);
@@ -1634,10 +1738,18 @@ export default function App() {
     try {
       let createdViaApi = false;
       const cleanIsbn = String(newBookForm.isbn || '').replace(/[^a-zA-Z0-9]/g, '');
-      const bookId = `book_${cleanIsbn || Date.now()}`;
+      const rawAcc = String(newBookForm.accession_no || newBookForm.barcode || '').trim();
+      const formattedAcc = formatAccessionNo(rawAcc);
+      const cleanAcc = formattedAcc.replace(/[^a-zA-Z0-9]/g, '');
+      const bookId = cleanAcc 
+        ? `book_reg_${cleanAcc}` 
+        : (cleanIsbn ? `book_${cleanIsbn}_${Date.now()}` : `book_${Date.now()}`);
+
       const bookToSave = {
         ...newBookForm,
         id: bookId,
+        accession_no: formattedAcc || newBookForm.accession_no || '',
+        barcode: newBookForm.barcode || formattedAcc || '',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
@@ -1646,7 +1758,7 @@ export default function App() {
         const res = await fetch('/api/books', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(newBookForm)
+          body: JSON.stringify(bookToSave)
         });
         const contentType = res.headers.get('content-type') || '';
         if (res.ok && contentType.includes('application/json')) {
@@ -1709,6 +1821,9 @@ export default function App() {
     e.preventDefault();
     if (!editingBook) return;
     try {
+      if (editingBook.accession_no) {
+        editingBook.accession_no = formatAccessionNo(editingBook.accession_no);
+      }
       let updatedViaApi = false;
       const updatedPayload = {
         ...editingBook,
@@ -1758,6 +1873,31 @@ export default function App() {
             category: editingBook.category,
             updated_at: updatedPayload.updated_at
           }, { onConflict: 'id' });
+
+          // Also propagate shared bibliographic metadata to all sibling copies in Supabase
+          if (editingBook.copies_list && editingBook.copies_list.length > 1) {
+            const siblingIds = editingBook.copies_list.map((c: any) => c.id).filter((id: string) => id !== editingBook.id);
+            if (siblingIds.length > 0) {
+              const sharedSupaUpdate = { ...supaUpdate };
+              delete sharedSupaUpdate.id;
+              delete sharedSupaUpdate.accession_no;
+              delete sharedSupaUpdate.barcode;
+              delete sharedSupaUpdate.status;
+              await supabase.from('books').update(sharedSupaUpdate).in('id', siblingIds);
+              for (const sibId of siblingIds) {
+                await supabase.from('book_customizations').upsert({
+                  id: sibId,
+                  cover_image: editingBook.cover_image,
+                  title: editingBook.title,
+                  author: editingBook.author,
+                  publisher: editingBook.publisher,
+                  category: editingBook.category,
+                  updated_at: updatedPayload.updated_at
+                }, { onConflict: 'id' });
+              }
+            }
+          }
+
           updatedViaApi = true;
         }
       }
@@ -1961,15 +2101,15 @@ export default function App() {
     }
   };
 
-  // Export All Books to Excel (All 29 standard columns matching attached form)
+  // Export All Books to Excel (All 29 standard columns matching attached form - all 2,917 copies)
   const handleExportAllBooksToExcel = async () => {
     setIsExportingExcel(true);
     try {
       let booksToExport: Book[] = [];
 
-      // 1. Try fetching all books without pagination from API
+      // 1. Try fetching all books without pagination and without grouping from API
       try {
-        const res = await fetch('/api/books?limit=10000');
+        const res = await fetch('/api/books?limit=10000&group=false&sort=accession');
         const contentType = res.headers.get('content-type') || '';
         if (res.ok && contentType.includes('application/json')) {
           const data = await res.json();
@@ -1981,7 +2121,7 @@ export default function App() {
         console.warn('API export fetch note:', apiErr);
       }
 
-      // 2. Fallback to client cache
+      // 2. Fallback to client cache (direct from Supabase)
       if (booksToExport.length === 0) {
         booksToExport = await loadAllBooksIntoClientCache();
       }
@@ -1996,7 +2136,37 @@ export default function App() {
         return;
       }
 
-      const rows = booksToExport.map((b: any, index: number) => {
+      // Flatten any grouped items into individual copies if needed, ensuring every volume is exported
+      const allIndividualBooks: any[] = [];
+      for (const b of booksToExport) {
+        if (Array.isArray(b.copies_list) && b.copies_list.length > 1) {
+          for (const copy of b.copies_list) {
+            allIndividualBooks.push({
+              ...b,
+              id: copy.id || b.id,
+              accession_no: copy.accession_no || b.accession_no,
+              barcode: copy.barcode || copy.accession_no || b.barcode,
+              call_number: copy.call_number || b.call_number,
+              copies: '1',
+              copy_count: 1,
+              copies_list: undefined
+            });
+          }
+        } else {
+          allIndividualBooks.push(b);
+        }
+      }
+
+      // Natural accession number sorting
+      const getAccNum = (accVal: any) => {
+        if (!accVal) return 99999999;
+        const clean = String(accVal).replace(/\D/g, '');
+        const parsed = parseInt(clean, 10);
+        return isNaN(parsed) ? 99999999 : parsed;
+      };
+      allIndividualBooks.sort((a, b) => getAccNum(a.accession_no) - getAccNum(b.accession_no));
+
+      const rows = allIndividualBooks.map((b: any, index: number) => {
         let dateStr = b.date_added || '';
         if (!dateStr && b.created_at) {
           try {
@@ -2021,10 +2191,12 @@ export default function App() {
           }
         }
 
+        const formattedAcc = formatAccessionNo(b.accession_no || b.barcode || '');
+
         return {
           'วันที่': dateStr,
           'คอลัมน์1': String(index + 1),
-          'เลขทะเบียน': b.accession_no || b.barcode || '',
+          'เลขทะเบียน': formattedAcc,
           '020 ISBN': b.isbn || '',
           '100 $a ผู้แต่ง': b.author || '',
           '245 $c ผู้แต่งร่วม': b.co_authors || '',
@@ -2050,7 +2222,7 @@ export default function App() {
           'หัวเรื่อง 3': b.subject_3 || '',
           'หมวดหมู่จัดเก็บ': b.category || '',
           'สถานะ': b.status || 'พร้อมให้บริการ',
-          'จำนวนเล่ม': b.copies || '1'
+          'จำนวนเล่ม': '1'
         };
       });
 
@@ -2059,7 +2231,7 @@ export default function App() {
       XLSX.utils.book_append_sheet(wb, ws, 'Books_Catalog');
       const filename = `library_books_export_${new Date().toISOString().slice(0, 10)}.xlsx`;
       XLSX.writeFile(wb, filename);
-      alert(`📥 ส่งออกไฟล์ Excel "${filename}" เรียบร้อยแล้ว จำนวน ${rows.length} รายการ (ครบทั้ง 29 คอลัมน์ตามแบบฟอร์มมาตรฐาน)`);
+      alert(`📥 ส่งออกไฟล์ Excel "${filename}" เรียบร้อยแล้ว ทั้งหมด ${rows.length.toLocaleString()} เล่ม (ครบทั้ง 29 คอลัมน์ตามแบบฟอร์มมาตรฐาน)`);
     } catch (err: any) {
       alert('เกิดข้อผิดพลาดในการส่งออกไฟล์ Excel: ' + err.message);
     } finally {
@@ -2240,21 +2412,75 @@ export default function App() {
           status
         };
       } else {
-        // Fallback for simple short list
-        const title = cells[0]?.trim() || 'ไม่ระบุชื่อเรื่อง';
-        const author = cells[1]?.trim() || 'ไม่ระบุผู้แต่ง';
-        const isbn = cells[2]?.trim() || Math.random().toString().substring(2, 15);
-        const publisher = cells[3]?.trim() || 'ไม่ระบุสำนักพิมพ์';
-        const year = cells[4]?.trim() || '2566';
-        const category = cells[5]?.trim() || 'ทั่วไป';
-        const callNum = cells[6]?.trim() || '000';
-        const accNo = cells[7]?.trim() || cells[2]?.trim() || `ACC${Date.now()}_${i}`;
+        // Smart parser for short lists (e.g. 5-column library TSV or standard short table)
+        let accNo = '';
+        let isbn = '';
+        let author = '';
+        let coAuthors = '';
+        let title = '';
+        let publisher = 'ไม่ระบุสำนักพิมพ์';
+        let year = new Date().getFullYear().toString();
+        let category = 'ทั่วไป';
+        let ddcVal = '';
+        let callSubVal = '';
+
+        // Check if cells[0] is Accession Number (e.g. 0000002985, B0000003014)
+        const cell0IsAcc = /^(?:[0-9]{4,10}|B[0-9]{4,10})$/i.test(cells[0]?.trim());
+
+        // Find ISBN column among cells
+        let isbnIdx = -1;
+        for (let cIdx = 0; cIdx < cells.length; cIdx++) {
+          const clean = cells[cIdx]?.replace(/[^0-9X]/gi, '') || '';
+          if (clean.length === 10 || clean.length === 13) {
+            isbn = clean;
+            isbnIdx = cIdx;
+            break;
+          }
+        }
+
+        if (cell0IsAcc && isbnIdx >= 0) {
+          // 5-Column Library TSV format: [เลขทะเบียน, ISBN, ผู้แต่ง, ผู้แต่งร่วม/นิติบุคคล, ชื่อเรื่อง]
+          accNo = cells[0].trim();
+          author = (cells.length >= 3 && cells[2] !== '-' ? cells[2].trim() : '') || 'ไม่ระบุผู้แต่ง';
+          coAuthors = (cells.length >= 4 && cells[3] !== '-' ? cells[3].trim() : '');
+          if (cells.length >= 5) {
+            title = cells[4].trim();
+          } else {
+            title = cells[cells.length - 1].trim();
+          }
+          ddcVal = title.includes('นิทาน') ? 'ด' : (title.includes('การ์ตูน') ? 'ย' : '000');
+          callSubVal = generateThaiCutter(author, title);
+          category = ddcVal === 'ด' ? 'สำหรับเด็ก' : (ddcVal === 'ย' ? 'เยาวชน' : 'ทั่วไป');
+        } else {
+          // General short list fallback: [ชื่อเรื่อง, ผู้แต่ง, ISBN, สำนักพิมพ์, ปี, หมวดหมู่, ...]
+          title = cells[0]?.trim() || 'ไม่ระบุชื่อเรื่อง';
+          author = cells[1]?.trim() || 'ไม่ระบุผู้แต่ง';
+          isbn = isbn || cells[2]?.trim() || Math.random().toString().substring(2, 15);
+          publisher = cells[3]?.trim() || 'ไม่ระบุสำนักพิมพ์';
+          year = cells[4]?.trim() || '2566';
+          category = cells[5]?.trim() || 'ทั่วไป';
+          accNo = cells[7]?.trim() || (cell0IsAcc ? cells[0]?.trim() : `ACC${Date.now()}_${i}`);
+          callSubVal = generateThaiCutter(author, title);
+        }
+
+        const cleanAcc = accNo.replace(/[^a-zA-Z0-9]/g, '');
+        const cleanIsbn = isbn.replace(/[^a-zA-Z0-9]/g, '');
+        const bookId = cleanAcc 
+          ? `book_reg_${cleanAcc}` 
+          : (cleanIsbn ? `book_${cleanIsbn}_${i}_${Date.now()}` : `book_${Date.now()}_${i}`);
+
+        const callNumber = (ddcVal && callSubVal) ? `${ddcVal} ${callSubVal}` : (ddcVal || callSubVal || '000');
+        const coverImage = (cleanIsbn.length >= 10)
+          ? `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-M.jpg?default=https%3A%2F%2Fimages.unsplash.com%2Fphoto-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600`
+          : 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600';
 
         book = {
+          id: bookId,
           title,
           subtitle: '',
           author,
-          co_authors: '',
+          writer: author,
+          co_authors: coAuthors,
           isbn,
           accession_no: accNo,
           barcode: accNo,
@@ -2262,19 +2488,20 @@ export default function App() {
           publication_place: 'กรุงเทพฯ',
           publication_year: year,
           edition: 'พิมพ์ครั้งที่ 1',
-          pages: '200',
+          pages: '160',
           language: 'ไทย',
           category,
           subject: category,
           keywords: `${title}, ${author}, ${category}`,
-          call_number: callNum,
-          ddc: '',
+          call_number: callNumber,
+          ddc: ddcVal,
+          call_sub: callSubVal,
           price: '',
           series: '',
           translator: '',
           illustration: '',
-          cover_image: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600',
-          description: 'นำเข้าผ่านระบบวางข้อความ',
+          cover_image: coverImage,
+          description: 'นำเข้าผ่านระบบวางข้อความ (Clipboard)',
           status: 'พร้อมให้บริการ'
         };
       }
@@ -2916,7 +3143,12 @@ export default function App() {
                     <span>ฐานข้อมูล Supabase</span>
                   </span>
                   <span className="font-semibold text-slate-700">
-                    พบหนังสือ {totalBooksCount > 0 ? totalBooksCount.toLocaleString() : books.length.toLocaleString()} เล่ม
+                    พบหนังสือ {totalBooksCount > 0 ? totalBooksCount.toLocaleString() : books.length.toLocaleString()} ชื่อเรื่อง
+                    {totalCopiesCount > 0 && totalCopiesCount !== totalBooksCount && (
+                      <span className="text-slate-500 font-normal ml-1.5">
+                        (รวมทั้งหมด {totalCopiesCount.toLocaleString()} เล่ม)
+                      </span>
+                    )}
                   </span>
                 </div>
                 {totalBooksCount > pageSize && (
@@ -2953,18 +3185,20 @@ export default function App() {
                   {books.map(b => (
                     <div key={b.id} className="bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm flex flex-col hover:shadow-md hover:border-amber-400 transition group">
                       <div className="relative aspect-[3/4] bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center p-2 overflow-hidden border-b border-slate-100">
-                        <img 
-                          src={b.cover_image} 
-                          alt={b.title} 
-                          onError={(e) => {
-                            (e.target as HTMLElement).style.display = 'none';
-                            const fallback = (e.target as HTMLElement).nextElementSibling;
-                            if (fallback) (fallback as HTMLElement).classList.remove('hidden');
-                          }}
-                          className="max-h-[90%] w-auto object-contain shadow-sm rounded transition group-hover:scale-105"
-                        />
+                        {b.cover_image && b.cover_image.trim() !== '' && b.cover_image !== '-' ? (
+                          <img 
+                            src={b.cover_image} 
+                            alt={b.title} 
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                              const fallback = (e.target as HTMLElement).nextElementSibling;
+                              if (fallback) (fallback as HTMLElement).classList.remove('hidden');
+                            }}
+                            className="max-h-[90%] w-auto object-contain shadow-sm rounded transition group-hover:scale-105"
+                          />
+                        ) : null}
                         {/* Fallback Book Cover UI */}
-                        <div className="hidden absolute inset-0 bg-gradient-to-br from-amber-800 via-slate-900 to-slate-950 p-3 flex flex-col justify-between text-white shadow-inner">
+                        <div className={`${b.cover_image && b.cover_image.trim() !== '' && b.cover_image !== '-' ? 'hidden' : ''} absolute inset-0 bg-gradient-to-br from-amber-800 via-slate-900 to-slate-950 p-3 flex flex-col justify-between text-white shadow-inner`}>
                           <div className="space-y-1.5">
                             <span className="text-[9px] font-mono font-bold text-amber-200 bg-white/10 px-1.5 py-0.5 rounded border border-white/15">
                               {b.call_number || '000'}
@@ -2980,9 +3214,15 @@ export default function App() {
                         </div>
 
                         {/* Badges on cover - Made extremely compact for mobile */}
-                        <span className="absolute top-2 left-2 text-[8px] font-mono font-bold px-1.5 py-0.5 bg-black/80 text-amber-300 rounded shadow-sm border border-white/10 backdrop-blur-sm">
-                          {b.accession_no || b.barcode || '-'}
-                        </span>
+                        {b.copy_count && b.copy_count > 1 ? (
+                          <span className="absolute top-2 left-2 text-[9px] font-mono font-bold px-2 py-0.5 bg-amber-600 text-white rounded-lg shadow-sm border border-amber-400/60 backdrop-blur-sm flex items-center gap-1">
+                            <span>📚 มี {b.copy_count} เล่ม</span>
+                          </span>
+                        ) : (
+                          <span className="absolute top-2 left-2 text-[8px] font-mono font-bold px-1.5 py-0.5 bg-black/80 text-amber-300 rounded shadow-sm border border-white/10 backdrop-blur-sm">
+                            {formatAccessionNo(b.accession_no) || b.barcode || '-'}
+                          </span>
+                        )}
                         <span className="absolute top-2 right-2 text-[8px] font-semibold px-1.5 py-0.5 bg-white/95 text-slate-800 rounded shadow-sm border border-slate-200 backdrop-blur-sm truncate max-w-[70px]">
                           {b.category}
                         </span>
@@ -2992,9 +3232,20 @@ export default function App() {
                           <h4 className="font-bold text-slate-900 text-xs sm:text-sm line-clamp-1 group-hover:text-amber-700 transition" title={b.title}>{b.title}</h4>
                           <p className="text-[10px] sm:text-xs text-slate-500 line-clamp-1">โดย {b.author}</p>
                           <div className="flex flex-col gap-1 pt-1">
-                            <span className="font-mono bg-amber-50 text-amber-950 border border-amber-200/50 px-1.5 py-0.5 rounded text-[9px] font-bold self-start max-w-full truncate">
-                              รหัส: {b.accession_no || b.barcode || '-'}
-                            </span>
+                            {b.copy_count && b.copy_count > 1 ? (
+                              <div className="space-y-0.5">
+                                <span className="font-mono bg-amber-100 text-amber-950 border border-amber-300 px-1.5 py-0.5 rounded text-[9px] font-extrabold inline-flex items-center gap-1">
+                                  <span>📚 มี {b.copy_count} เล่มในระบบ</span>
+                                </span>
+                                <p className="text-[9px] text-slate-500 font-mono truncate" title={b.accession_numbers?.map(formatAccessionNo).join(', ')}>
+                                  ทะเบียน: {b.accession_numbers?.slice(0, 3).map(formatAccessionNo).join(', ')}{b.accession_numbers && b.accession_numbers.length > 3 ? ` (+${b.accession_numbers.length - 3})` : ''}
+                                </p>
+                              </div>
+                            ) : (
+                              <span className="font-mono bg-amber-50 text-amber-950 border border-amber-200/50 px-1.5 py-0.5 rounded text-[9px] font-bold self-start max-w-full truncate">
+                                รหัส: {formatAccessionNo(b.accession_no) || b.barcode || '-'}
+                              </span>
+                            )}
                             <span className="font-mono bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded text-[9px] font-bold self-start max-w-full truncate">ชั้น: {b.call_number}</span>
                           </div>
                         </div>
@@ -3690,15 +3941,19 @@ export default function App() {
 
                                   <div className="flex gap-4">
                                     <div className="w-20 h-28 bg-white p-1.5 rounded-xl border border-slate-200 shadow-sm flex items-center justify-center shrink-0">
-                                      <img 
-                                        src={topBook.cover_image} 
-                                        alt={topBook.title} 
-                                        onError={(e: any) => {
-                                          e.currentTarget.onerror = null;
-                                          e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
-                                        }}
-                                        className="max-h-full object-contain rounded" 
-                                      />
+                                      {topBook.cover_image && topBook.cover_image.trim() !== '' && topBook.cover_image !== '-' ? (
+                                        <img 
+                                          src={topBook.cover_image} 
+                                          alt={topBook.title} 
+                                          onError={(e: any) => {
+                                            e.currentTarget.onerror = null;
+                                            e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
+                                          }}
+                                          className="max-h-full object-contain rounded" 
+                                        />
+                                      ) : (
+                                        <BookOpen className="w-8 h-8 text-slate-300" />
+                                      )}
                                     </div>
                                     <div className="flex-1 space-y-1">
                                       <h5 className="font-bold text-slate-900 text-base leading-snug line-clamp-2">{topBook.title}</h5>
@@ -3817,15 +4072,19 @@ export default function App() {
                               return (
                                 <div key={idx} className="border border-slate-200 rounded-xl p-3 flex gap-3 hover:bg-slate-50 transition bg-white items-center">
                                   <div className="w-12 h-16 bg-slate-100 flex items-center justify-center shrink-0 border border-slate-200 rounded overflow-hidden p-1">
-                                    <img 
-                                      src={m.cover_image} 
-                                      alt={m.title} 
-                                      onError={(e: any) => {
-                                        e.currentTarget.onerror = null;
-                                        e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
-                                      }}
-                                      className="max-h-full object-contain" 
-                                    />
+                                    {m.cover_image && m.cover_image.trim() !== '' && m.cover_image !== '-' ? (
+                                      <img 
+                                        src={m.cover_image} 
+                                        alt={m.title} 
+                                        onError={(e: any) => {
+                                          e.currentTarget.onerror = null;
+                                          e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
+                                        }}
+                                        className="max-h-full object-contain" 
+                                      />
+                                    ) : (
+                                      <BookOpen className="w-6 h-6 text-slate-300" />
+                                    )}
                                   </div>
                                   <div className="flex-1 space-y-1 min-w-0 text-xs">
                                     <div className="flex items-center justify-between gap-1">
@@ -4257,7 +4516,7 @@ export default function App() {
                     <span>Supabase Dashboard</span>
                   </a>
                   <a
-                    href="https://docs.google.com/spreadsheets/d/1IXKv6ZCq5AdUxZcKYsUz1IY3uH9qBxnMTTuYgeT7RRg/edit?gid=889338917#gid=889338917"
+                    href="https://docs.google.com/spreadsheets/d/1rq9LyA7pFXoQ0F-g_xH12ZHhS7ftzhgq/edit?usp=sharing&ouid=104504546234597964606&rtpof=true&sd=true"
                     target="_blank"
                     rel="noreferrer"
                     className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition border border-white/15"
@@ -4364,14 +4623,14 @@ export default function App() {
                     onClick={handleExportAllBooksToExcel}
                     disabled={isExportingExcel}
                     className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition flex items-center gap-1.5 self-start sm:self-auto cursor-pointer shadow-sm"
-                    title="ส่งออกข้อมูลหนังสือทั้งหมดเป็นไฟล์ Excel ครบทั้ง 29 คอลัมน์ตามแบบฟอร์มมาตรฐาน"
+                    title={`ส่งออกข้อมูลหนังสือทั้งหมดทุกเล่มเป็นไฟล์ Excel (${(totalCopiesCount || 2917).toLocaleString()} เล่ม) ครบทั้ง 29 คอลัมน์ตามแบบฟอร์มมาตรฐาน`}
                   >
                     {isExportingExcel ? (
                       <RefreshCw className="h-4 w-4 animate-spin" />
                     ) : (
                       <FileSpreadsheet className="h-4 w-4" />
                     )}
-                    <span>{isExportingExcel ? 'กำลังส่งออก Excel...' : 'ส่งออกไฟล์ Excel (29 คอลัมน์)'}</span>
+                    <span>{isExportingExcel ? 'กำลังส่งออก Excel...' : `ส่งออกไฟล์ Excel ทั้งหมด (${(totalCopiesCount || 2917).toLocaleString()} เล่ม)`}</span>
                   </button>
                 </div>
               </div>
@@ -4483,20 +4742,22 @@ export default function App() {
             {/* Admin Books List Table */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">ฐานข้อมูลบรรณานุกรม ({totalBooksCount || books.length} เล่ม)</span>
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                  ฐานข้อมูลบรรณานุกรม ({totalBooksCount || books.length} ชื่อเรื่อง {totalCopiesCount > 0 && totalCopiesCount !== totalBooksCount ? `• รวม ${totalCopiesCount.toLocaleString()} เล่ม` : ''})
+                </span>
                 <button
                   type="button"
                   onClick={handleExportAllBooksToExcel}
                   disabled={isExportingExcel}
                   className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition flex items-center gap-1.5 cursor-pointer shadow-sm self-start sm:self-auto"
-                  title="ส่งออกฐานข้อมูลหนังสือทั้งหมดเป็นไฟล์ Excel ครบทั้ง 29 คอลัมน์ตามแบบฟอร์มมาตรฐาน"
+                  title={`ส่งออกฐานข้อมูลหนังสือทั้งหมดทุกเล่มเป็นไฟล์ Excel (${(totalCopiesCount || 2917).toLocaleString()} เล่ม) ครบทั้ง 29 คอลัมน์ตามแบบฟอร์มมาตรฐาน`}
                 >
                   {isExportingExcel ? (
                     <RefreshCw className="h-4 w-4 animate-spin" />
                   ) : (
                     <FileSpreadsheet className="h-4 w-4" />
                   )}
-                  <span>{isExportingExcel ? 'กำลังส่งออก Excel...' : 'ส่งออกไฟล์ Excel (29 คอลัมน์)'}</span>
+                  <span>{isExportingExcel ? 'กำลังส่งออก Excel...' : `ส่งออกไฟล์ Excel ทั้งหมด (${(totalCopiesCount || 2917).toLocaleString()} เล่ม)`}</span>
                 </button>
               </div>
 
@@ -4517,24 +4778,51 @@ export default function App() {
                     {books.map(b => (
                       <tr key={b.id} className="hover:bg-slate-50/50 transition">
                         <td className="py-3 px-4">
-                          <img 
-                            src={b.cover_image} 
-                            alt={b.title} 
-                            onError={(e: any) => {
-                              e.currentTarget.onerror = null;
-                              e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
-                            }}
-                            className="w-9 h-11 object-contain bg-slate-50 rounded shadow-sm" 
-                          />
+                          {b.cover_image && b.cover_image.trim() !== '' && b.cover_image !== '-' ? (
+                            <img 
+                              src={b.cover_image} 
+                              alt={b.title} 
+                              onError={(e: any) => {
+                                e.currentTarget.onerror = null;
+                                e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
+                              }}
+                              className="w-9 h-11 object-contain bg-slate-50 rounded shadow-sm" 
+                            />
+                          ) : (
+                            <div className="w-9 h-11 bg-slate-100 rounded flex items-center justify-center text-slate-400">
+                              <BookOpen className="w-4 h-4 opacity-50" />
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-4">
-                          <span className="font-mono bg-amber-50 text-amber-900 border border-amber-200 px-2 py-1 rounded text-xs font-bold block w-max">
-                            {b.accession_no || b.barcode || '-'}
-                          </span>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono bg-amber-50 text-amber-900 border border-amber-200 px-2 py-0.5 rounded text-xs font-bold block w-max">
+                                {formatAccessionNo(b.accession_no) || b.barcode || '-'}
+                              </span>
+                              {b.copy_count && b.copy_count > 1 && (
+                                <span className="bg-amber-100 text-amber-800 text-[10px] font-extrabold px-1.5 py-0.5 rounded-full border border-amber-300">
+                                  {b.copy_count} เล่ม
+                                </span>
+                              )}
+                            </div>
+                            {b.copy_count && b.copy_count > 1 && b.accession_numbers && b.accession_numbers.length > 1 && (
+                              <p className="text-[10px] font-mono text-slate-500 max-w-[150px] truncate" title={b.accession_numbers.map(formatAccessionNo).join(', ')}>
+                                ทะเบียน: {b.accession_numbers.map(formatAccessionNo).join(', ')}
+                              </p>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-4 max-w-sm">
                           <div className="font-bold text-slate-900 line-clamp-1">{b.title}</div>
-                          <div className="text-[11px] text-slate-400">โดย: {b.author} | {b.publisher} ({b.publication_year})</div>
+                          <div className="text-[11px] text-slate-400">
+                            โดย: {b.author} | {b.publisher} ({b.publication_year})
+                            {b.copy_count && b.copy_count > 1 && (
+                              <span className="text-amber-700 font-bold ml-1">
+                                • รวม {b.copy_count} เล่มในระบบ
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="py-3 px-4">
                           <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 rounded text-[10px] text-slate-700 font-semibold">{b.category}</span>
@@ -4615,8 +4903,16 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-2">
                 <span className="text-xs text-slate-400 font-bold uppercase tracking-wide">สัดส่วนหนังสือในระบบ</span>
-                <p className="text-3xl font-black text-slate-900">{totalBooksCount > 0 ? totalBooksCount.toLocaleString() : (sheetSyncInfo?.totalBooks?.toLocaleString() || books.length.toLocaleString())} <span className="text-sm font-normal text-slate-400">เล่ม</span></p>
-                <div className="text-xs text-slate-500">ข้อมูลเชื่อมต่อตรงกับฐานข้อมูล Supabase (Cloud Database)</div>
+                <p className="text-3xl font-black text-slate-900">
+                  {totalBooksCount > 0 ? totalBooksCount.toLocaleString() : (sheetSyncInfo?.totalBooks?.toLocaleString() || books.length.toLocaleString())}
+                  <span className="text-sm font-normal text-slate-400"> ชื่อเรื่อง</span>
+                  {totalCopiesCount > 0 && totalCopiesCount !== totalBooksCount && (
+                    <span className="text-sm font-bold text-indigo-600 block sm:inline sm:ml-2">
+                      ({totalCopiesCount.toLocaleString()} เล่ม)
+                    </span>
+                  )}
+                </p>
+                <div className="text-xs text-slate-500">ข้อมูลเชื่อมต่อตรงกับฐานข้อมูล Supabase (2,917 เล่ม รวมเล่มซ้ำเป็น 2,303 ชื่อเรื่อง)</div>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-2">
                 <span className="text-xs text-slate-400 font-bold uppercase tracking-wide">การสแกนหน้าปกสะสม</span>
@@ -4767,7 +5063,7 @@ export default function App() {
                   <div className="flex flex-col sm:flex-row gap-6">
                     <div className="w-full sm:w-48 shrink-0 flex flex-col items-center">
                       <div className="w-full bg-slate-100 p-3 rounded-xl border border-slate-200 flex items-center justify-center aspect-[4/5] overflow-hidden shadow-inner">
-                        {(!selectedBookDetail.cover_image || coverImageFailed || selectedBookDetail.cover_image === '-' || selectedBookDetail.cover_image === 'null' || selectedBookDetail.cover_image === 'undefined') ? (
+                        {(!selectedBookDetail.cover_image || coverImageFailed || !selectedBookDetail.cover_image.trim() || selectedBookDetail.cover_image === '-' || selectedBookDetail.cover_image === 'null' || selectedBookDetail.cover_image === 'undefined') ? (
                           <div className="w-full h-full min-h-[180px] flex flex-col items-center justify-center p-3 bg-gradient-to-br from-amber-50 to-orange-50 rounded-lg text-center border border-amber-200/60 select-none">
                             <div className="p-2.5 bg-white/90 rounded-2xl shadow-2xs mb-2 text-amber-600">
                               <BookOpen className="h-8 w-8" />
@@ -4850,7 +5146,7 @@ export default function App() {
                       <div className="grid grid-cols-2 gap-3 text-xs">
                         <div className="col-span-2 sm:col-span-1 bg-amber-50/80 p-2.5 rounded-lg border border-amber-200/70">
                           <span className="text-amber-800 font-bold block text-[11px]">เลขทะเบียนหนังสือ (Accession No.)</span>
-                          <span className="text-slate-900 font-mono font-black text-sm">{selectedBookDetail.accession_no || selectedBookDetail.barcode || '-'}</span>
+                          <span className="text-slate-900 font-mono font-black text-sm">{formatAccessionNo(selectedBookDetail.accession_no) || selectedBookDetail.barcode || '-'}</span>
                         </div>
                         <div className="col-span-2 sm:col-span-1 bg-slate-50 p-2.5 rounded-lg border border-slate-200/70">
                           <span className="text-slate-500 font-bold block text-[11px]">เลขเรียกหนังสือ (Call Number)</span>
@@ -4946,9 +5242,25 @@ export default function App() {
 
                   {/* กรอบสำหรับแสดงข้อมูลทะเบียนหนังสือ (ก่อนบัตรรายการข้อมูลบรรณานุกรม) */}
                   {(() => {
-                    const rawAcc = selectedBookDetail.accession_no || selectedBookDetail.barcode || selectedBookDetail.id;
+                    const copies = (selectedBookDetail.copies_list && selectedBookDetail.copies_list.length > 0)
+                      ? selectedBookDetail.copies_list
+                      : [{
+                          id: selectedBookDetail.id,
+                          accession_no: selectedBookDetail.accession_no || selectedBookDetail.barcode || selectedBookDetail.id,
+                          barcode: selectedBookDetail.barcode || selectedBookDetail.accession_no || selectedBookDetail.id,
+                          call_number: selectedBookDetail.call_number || '',
+                          status: selectedBookDetail.status || 'พร้อมให้บริการ',
+                          copy_no: 1
+                        }];
+
+                    const activeCopy = copies.find(c => c.id === activeCopyId) || copies[0];
+                    const activeIndex = copies.findIndex(c => c.id === activeCopy.id);
+                    const copyNumber = activeIndex >= 0 ? activeIndex + 1 : 1;
+                    const totalCopies = copies.length;
+
+                    const rawAcc = activeCopy.accession_no || selectedBookDetail.accession_no || selectedBookDetail.barcode || selectedBookDetail.id;
                     const displayAccNo = formatAccessionNo(rawAcc);
-                    const callNumber = selectedBookDetail.call_number || `${selectedBookDetail.ddc || ''} ${selectedBookDetail.call_sub || ''}`.trim() || '-';
+                    const callNumber = activeCopy.call_number || selectedBookDetail.call_number || `${selectedBookDetail.ddc || ''} ${selectedBookDetail.call_sub || ''}`.trim() || '-';
                     const displayYear = selectedBookDetail.publication_year || '-';
                     const detectedVol = extractVolumeFromTitle(
                       selectedBookDetail.title,
@@ -4957,131 +5269,187 @@ export default function App() {
                     );
                     const displayVolume = detectedVol !== '-' ? detectedVol : '1';
 
-                    // Compute copy number for selectedBookDetail
-                    const targetIsbn = (selectedBookDetail.isbn || '').replace(/[^0-9X]/gi, '');
-                    const targetTitle = (selectedBookDetail.title || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
-                    const getAccNum = (acc?: string): number => {
-                      if (!acc) return 0;
-                      const digits = acc.replace(/[^0-9]/g, '');
-                      return digits ? parseInt(digits, 10) : 0;
-                    };
-
-                    const copyMap = new Map<string, { id: string; accNo: string; num: number }>();
-                    books.forEach(b => {
-                      let match = false;
-                      const bIsbn = (b.isbn || '').replace(/[^0-9X]/gi, '');
-                      const bTitle = (b.title || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
-
-                      if (targetIsbn && targetIsbn.length >= 8 && bIsbn) {
-                        match = (bIsbn === targetIsbn || bIsbn.includes(targetIsbn) || targetIsbn.includes(bIsbn));
-                      } else if (targetTitle && targetTitle.length > 2 && bTitle) {
-                        match = (bTitle === targetTitle);
-                      }
-
-                      if (match || b.id === selectedBookDetail.id) {
-                        const acc = b.accession_no || b.barcode || b.id || '';
-                        copyMap.set(acc || b.id, {
-                          id: b.id,
-                          accNo: acc,
-                          num: getAccNum(acc)
-                        });
-                      }
-                    });
-
-                    const currKey = rawAcc || selectedBookDetail.id;
-                    if (!copyMap.has(currKey)) {
-                      copyMap.set(currKey, {
-                        id: selectedBookDetail.id,
-                        accNo: rawAcc || '',
-                        num: getAccNum(rawAcc)
-                      });
-                    }
-
-                    const sortedCopies = Array.from(copyMap.values()).sort((a, b) => {
-                      if (a.num !== b.num) return a.num - b.num;
-                      return (a.accNo || '').localeCompare(b.accNo || '');
-                    });
-
-                    const currNum = getAccNum(rawAcc);
-                    const foundIdx = sortedCopies.findIndex(c => c.id === selectedBookDetail.id || c.accNo === rawAcc || (currNum > 0 && c.num === currNum));
-                    const copyNumber = foundIdx >= 0 ? foundIdx + 1 : 1;
-                    const totalCopies = Math.max(sortedCopies.length, 1);
-
                     return (
-                      <div className="bg-gradient-to-r from-amber-50/80 via-white to-amber-50/40 border-2 border-amber-300/80 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
-                        <div className="flex items-center justify-between border-b border-amber-200/80 pb-2.5">
-                          <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-700 flex items-center justify-center font-bold">
-                              <Barcode className="w-4 h-4" />
+                      <div className="space-y-4">
+                        <div className="bg-gradient-to-r from-amber-50/80 via-white to-amber-50/40 border-2 border-amber-300/80 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
+                          <div className="flex items-center justify-between border-b border-amber-200/80 pb-2.5">
+                            <div className="flex items-center gap-2">
+                              <div className="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-700 flex items-center justify-center font-bold">
+                                <Barcode className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <h4 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                                  <span>ข้อมูลทะเบียนหนังสือ</span>
+                                  <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300">
+                                    Book Accession & Copy Info
+                                  </span>
+                                </h4>
+                                <p className="text-[11px] text-slate-500">
+                                  ข้อมูลการลงทะเบียนและลำดับฉบับของหนังสือในระบบห้องสมุด {totalCopies > 1 ? `(ทั้งหมด ${totalCopies} เล่ม)` : ''}
+                                </p>
+                              </div>
                             </div>
-                            <div>
-                              <h4 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
-                                <span>ข้อมูลทะเบียนหนังสือ</span>
-                                <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-300">
-                                  Book Accession & Copy Info
-                                </span>
-                              </h4>
-                              <p className="text-[11px] text-slate-500">ข้อมูลการลงทะเบียนและลำดับฉบับของหนังสือในระบบห้องสมุด</p>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-mono font-bold bg-white text-amber-900 border border-amber-300 px-3 py-1 rounded-lg shadow-2xs">
+                                {displayAccNo}
+                              </span>
                             </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-mono font-bold bg-white text-amber-900 border border-amber-300 px-3 py-1 rounded-lg shadow-2xs">
-                              {displayAccNo}
-                            </span>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
+                            {/* 1. เลขทะเบียน */}
+                            <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                              <span className="text-[11px] font-bold text-slate-500 mb-1">เลขทะเบียน :</span>
+                              <span className="font-mono truncate" style={{ fontWeight: 'normal', color: '#0047ff', fontSize: '13px' }} title={displayAccNo}>
+                                {displayAccNo}
+                              </span>
+                            </div>
+
+                            {/* 2. เลขเรียกหนังสือ */}
+                            <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                              <span className="text-[11px] font-bold text-slate-500 mb-1">เลขเรียกหนังสือ :</span>
+                              <span className="text-xs sm:text-sm font-mono text-indigo-700 truncate" style={{ fontWeight: 'normal' }} title={callNumber}>
+                                {callNumber}
+                              </span>
+                            </div>
+
+                            {/* 3. ปีที่พิมพ์ */}
+                            <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                              <span className="text-[11px] font-bold text-slate-500 mb-1">ปีที่พิมพ์ :</span>
+                              <span className="text-xs sm:text-sm font-mono text-slate-800" style={{ fontWeight: 'normal' }}>
+                                {displayYear}
+                              </span>
+                            </div>
+
+                            {/* 4. เล่ม */}
+                            <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[11px] font-bold text-slate-500">เล่ม :</span>
+                                {detectedVol !== '-' && (
+                                  <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 py-0.2 rounded font-bold">จากชื่อเรื่อง</span>
+                                )}
+                              </div>
+                              <span className="text-xs sm:text-sm text-slate-900" style={{ fontWeight: 'normal' }}>
+                                {displayVolume}
+                              </span>
+                            </div>
+
+                            {/* 5. ฉบับ */}
+                            <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between col-span-2 sm:col-span-1">
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[11px] font-bold text-slate-500">ฉบับ :</span>
+                                {totalCopies > 1 && (
+                                  <span className="text-[9px] bg-blue-100 text-blue-800 px-1 py-0.2 rounded font-bold">
+                                    {copyNumber}/{totalCopies}
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-xs sm:text-sm text-blue-700" style={{ fontWeight: 'normal' }}>
+                                {copyNumber}
+                              </span>
+                            </div>
                           </div>
+
+                          {/* สลับดูตัวเล่มเมื่อมีหลายเล่ม */}
+                          {totalCopies > 1 && (
+                            <div className="pt-2 border-t border-amber-200/70 flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] font-bold text-slate-600 mr-1">
+                                📚 เลือกดูข้อมูลตัวเล่ม ({totalCopies} เล่ม):
+                              </span>
+                              {copies.map((c, i) => (
+                                <button
+                                  key={c.id || i}
+                                  type="button"
+                                  onClick={() => setActiveCopyId(c.id)}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition cursor-pointer border ${
+                                    activeCopy.id === c.id
+                                      ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                                      : 'bg-white text-slate-700 border-amber-300 hover:bg-amber-100/60'
+                                  }`}
+                                >
+                                  ฉบับที่ {i + 1} ({formatAccessionNo(c.accession_no)})
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
-                          {/* 1. เลขทะเบียน */}
-                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
-                            <span className="text-[11px] font-bold text-slate-500 mb-1">เลขทะเบียน :</span>
-                            <span className="text-xs sm:text-sm font-mono font-extrabold text-slate-900 truncate" title={displayAccNo}>
-                              {displayAccNo}
-                            </span>
-                          </div>
-
-                          {/* 2. เลขเรียกหนังสือ */}
-                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
-                            <span className="text-[11px] font-bold text-slate-500 mb-1">เลขเรียกหนังสือ :</span>
-                            <span className="text-xs sm:text-sm font-mono font-extrabold text-indigo-700 truncate" title={callNumber}>
-                              {callNumber}
-                            </span>
-                          </div>
-
-                          {/* 3. ปีที่พิมพ์ */}
-                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
-                            <span className="text-[11px] font-bold text-slate-500 mb-1">ปีที่พิมพ์ :</span>
-                            <span className="text-xs sm:text-sm font-mono font-extrabold text-slate-800">
-                              {displayYear}
-                            </span>
-                          </div>
-
-                          {/* 4. เล่ม */}
-                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-[11px] font-bold text-slate-500">เล่ม :</span>
-                              {detectedVol !== '-' && (
-                                <span className="text-[9px] bg-emerald-100 text-emerald-800 px-1 py-0.2 rounded font-bold">จากชื่อเรื่อง</span>
-                              )}
+                        {/* ตารางแสดงรายการตัวเล่มทั้งหมดในระบบห้องสมุด (Holdings / Copies List) */}
+                        <div className="bg-slate-50/90 border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
+                            <div className="flex items-center gap-2">
+                              <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-700 flex items-center justify-center font-bold">
+                                <BookOpen className="w-4.5 h-4.5" />
+                              </div>
+                              <div>
+                                <h4 className="text-xs sm:text-sm font-bold text-slate-800 flex items-center gap-2">
+                                  <span>รายการตัวเล่มในระบบห้องสมุด</span>
+                                  <span className="text-[10px] font-bold text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded-full border border-indigo-300">
+                                    มีทั้งหมด {totalCopies} เล่ม
+                                  </span>
+                                </h4>
+                                <p className="text-[11px] text-slate-500">
+                                  บันทึกในฐานข้อมูลทุกเล่ม เลขทะเบียนไม่ซ้ำกัน ตรวจสอบสถานะและเลขทะเบียนของแต่ละเล่มได้
+                                </p>
+                              </div>
                             </div>
-                            <span className="text-xs sm:text-sm font-extrabold text-slate-900">
-                              {displayVolume}
-                            </span>
                           </div>
 
-                          {/* 5. ฉบับ */}
-                          <div className="bg-white p-3 rounded-xl border border-amber-200/70 shadow-2xs flex flex-col justify-between col-span-2 sm:col-span-1">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="text-[11px] font-bold text-slate-500">ฉบับ :</span>
-                              {totalCopies > 1 && (
-                                <span className="text-[9px] bg-blue-100 text-blue-800 px-1 py-0.2 rounded font-bold">
-                                  {copyNumber}/{totalCopies}
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-xs sm:text-sm font-extrabold text-blue-700">
-                              {copyNumber}
-                            </span>
+                          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                            <table className="w-full text-xs text-left">
+                              <thead className="bg-slate-100/80 text-slate-700 font-bold border-b border-slate-200">
+                                <tr>
+                                  <th className="py-2.5 px-3">ฉบับที่</th>
+                                  <th className="py-2.5 px-3">เลขทะเบียน (Accession No.)</th>
+                                  <th className="py-2.5 px-3">บาร์โค้ด</th>
+                                  <th className="py-2.5 px-3">เลขเรียกหนังสือ</th>
+                                  <th className="py-2.5 px-3">สถานะตัวเล่ม</th>
+                                  <th className="py-2.5 px-3 text-right">การเลือกดู</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 text-slate-600">
+                                {copies.map((copy, idx) => (
+                                  <tr 
+                                    key={copy.id || idx} 
+                                    className={`hover:bg-amber-50/50 transition ${activeCopy.id === copy.id ? 'bg-amber-50/70 font-semibold' : ''}`}
+                                  >
+                                    <td className="py-2.5 px-3 font-bold text-slate-800">
+                                      ฉบับที่ {idx + 1}
+                                    </td>
+                                    <td className="py-2.5 px-3 font-mono font-bold text-amber-900">
+                                      <span className="bg-amber-100/70 border border-amber-300/80 px-2 py-0.5 rounded">
+                                        {formatAccessionNo(copy.accession_no)}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 font-mono text-slate-600">
+                                      {copy.barcode || copy.accession_no || '-'}
+                                    </td>
+                                    <td className="py-2.5 px-3 font-mono text-indigo-700">
+                                      {copy.call_number || selectedBookDetail.call_number || '-'}
+                                    </td>
+                                    <td className="py-2.5 px-3">
+                                      <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full ${copy.status === 'พร้อมให้บริการ' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}`}>
+                                        <span className={`w-1.5 h-1.5 rounded-full ${copy.status === 'พร้อมให้บริการ' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                                        {copy.status || 'พร้อมให้บริการ'}
+                                      </span>
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right">
+                                      <button
+                                        type="button"
+                                        onClick={() => setActiveCopyId(copy.id)}
+                                        className={`px-2.5 py-1 text-[10px] font-bold rounded-lg transition cursor-pointer ${
+                                          activeCopy.id === copy.id
+                                            ? 'bg-amber-600 text-white shadow-2xs'
+                                            : 'text-amber-800 hover:bg-amber-100 bg-amber-50/80 border border-amber-200'
+                                        }`}
+                                      >
+                                        {activeCopy.id === copy.id ? '✓ กำลังแสดงฉบับนี้' : 'เลือกดูฉบับนี้'}
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
                           </div>
                         </div>
                       </div>
@@ -5204,7 +5572,7 @@ export default function App() {
                   <div className="bg-[#db4d6d] text-white px-4 py-3 rounded-xl flex flex-wrap justify-between items-center gap-2 shadow-sm">
                     <div className="font-bold text-base flex items-center gap-2">
                       <Database className="h-5 w-5" />
-                      <span>หน้า MARC</span>
+                      <span style={{ fontSize: '14px', fontWeight: 'bold', fontFamily: 'Kanit, sans-serif', lineHeight: '23px' }}>หน้า MARC</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -5355,6 +5723,31 @@ export default function App() {
             </div>
 
             <div className="p-6 space-y-6">
+              {/* Multi-copy sync notification banner */}
+              {editingBook.copy_count && editingBook.copy_count > 1 && (
+                <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl flex items-start gap-3 shadow-xs">
+                  <div className="w-8 h-8 rounded-lg bg-amber-600 text-white flex items-center justify-center font-bold shrink-0">
+                    <BookOpen className="w-4.5 h-4.5" />
+                  </div>
+                  <div className="space-y-1">
+                    <h5 className="text-xs sm:text-sm font-bold text-amber-950 flex items-center gap-2">
+                      <span>หนังสือเรื่องนี้มีทั้งหมด {editingBook.copy_count} เล่มในระบบ</span>
+                      <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full font-bold">
+                        ซิงค์ข้อมูลอัตโนมัติ
+                      </span>
+                    </h5>
+                    <p className="text-xs text-amber-800 leading-relaxed">
+                      การแก้ไขข้อมูลบรรณานุกรม (ชื่อเรื่อง, ผู้แต่ง, สำนักพิมพ์, หมวดหมู่, ปีพิมพ์, ลิงก์รูปภาพหน้าปก ฯลฯ) จะถูกนำไปปรับปรุงข้อมูลหนังสือทั้ง <strong>{editingBook.copy_count} เล่ม</strong> ในฐานข้อมูลพร้อมกันโดยอัตโนมัติ เพื่อให้ข้อมูลตรงกันสมบูรณ์
+                    </p>
+                    {editingBook.accession_numbers && editingBook.accession_numbers.length > 1 && (
+                      <p className="text-[11px] font-mono text-amber-900 pt-0.5">
+                        เลขทะเบียนของตัวเล่มทั้งหมด: {editingBook.accession_numbers.join(', ')}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* SECTION 1: ข้อมูลทางบรรณานุกรมหลัก */}
               <div className="space-y-4">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-amber-700 bg-amber-50 px-2.5 py-1 rounded-md inline-block">📖 ข้อมูลหนังสือหลัก (Primary Metadata)</h4>
@@ -5730,7 +6123,7 @@ export default function App() {
                         className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-mono focus:outline-none"
                         placeholder="https://... ลิงก์รูปภาพหน้าปกตรง"
                       />
-                      {editingBook.cover_image && (
+                      {editingBook.cover_image && editingBook.cover_image.trim() !== '' && (
                         <img src={editingBook.cover_image} alt="Cover Preview" className="h-10 w-8 object-contain bg-slate-100 rounded border border-slate-200 shadow-sm shrink-0" />
                       )}
                     </div>
@@ -5790,20 +6183,26 @@ export default function App() {
 
             <div className="p-6 space-y-4">
               <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl flex gap-3.5 items-center">
-                <img 
-                  src={deletingBookTarget.cover_image} 
-                  alt={deletingBookTarget.title} 
-                  onError={(e: any) => {
-                    e.currentTarget.onerror = null;
-                    e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
-                  }}
-                  className="w-12 h-16 object-contain bg-white rounded-lg border border-slate-200 shadow-2xs shrink-0" 
-                />
+                {deletingBookTarget.cover_image && deletingBookTarget.cover_image.trim() !== '' && deletingBookTarget.cover_image !== '-' ? (
+                  <img 
+                    src={deletingBookTarget.cover_image} 
+                    alt={deletingBookTarget.title} 
+                    onError={(e: any) => {
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=200';
+                    }}
+                    className="w-12 h-16 object-contain bg-white rounded-lg border border-slate-200 shadow-2xs shrink-0" 
+                  />
+                ) : (
+                  <div className="w-12 h-16 bg-white rounded-lg border border-slate-200 flex items-center justify-center text-slate-300 shrink-0">
+                    <BookOpen className="w-6 h-6" />
+                  </div>
+                )}
                 <div className="text-xs space-y-1 min-w-0">
                   <h4 className="font-bold text-slate-900 line-clamp-2 text-sm">{deletingBookTarget.title}</h4>
                   <p className="text-slate-500 truncate">โดย: {deletingBookTarget.author}</p>
                   <p className="font-mono text-slate-600 font-semibold">
-                    เลขทะเบียน: {deletingBookTarget.accession_no || deletingBookTarget.barcode || '-'} | {deletingBookTarget.call_number || '-'}
+                    เลขทะเบียน: {formatAccessionNo(deletingBookTarget.accession_no) || deletingBookTarget.barcode || '-'} | {deletingBookTarget.call_number || '-'}
                   </p>
                 </div>
               </div>

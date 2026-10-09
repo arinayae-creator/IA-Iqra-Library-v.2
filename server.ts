@@ -541,7 +541,7 @@ let backgroundEnrichProgress = {
 };
 
 const CACHE_FILE_PATH = path.resolve(__dirname, 'books_cache_v2.json');
-const DEFAULT_GOOGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1IXKv6ZCq5AdUxZcKYsUz1IY3uH9qBxnMTTuYgeT7RRg/export?format=csv&gid=889338917';
+const DEFAULT_GOOGLE_SHEET_URL = 'https://docs.google.com/spreadsheets/d/1rq9LyA7pFXoQ0F-g_xH12ZHhS7ftzhgq/export?format=csv';
 
 function saveCacheToDisk() {
   try {
@@ -641,12 +641,29 @@ async function mergeSupabaseCustomizations() {
   }
 }
 
+// Format accession number: pad numeric accession numbers with leading zeros to 10 digits (e.g. 2426 -> 0000002426)
+function formatAccessionNo(raw?: string | number | null): string {
+  if (raw === null || raw === undefined) return '';
+  const str = String(raw).trim();
+  if (!str || str === '-') return '';
+  if (/^\d+$/.test(str) && str.length < 10) {
+    return str.padStart(10, '0');
+  }
+  if (/^b\d+$/i.test(str)) {
+    return str.slice(1).padStart(10, '0');
+  }
+  return str;
+}
+
 // Self-healing / Auto-recovery logic to reconstruct missing titles, authors, and metadata from rich description/keywords
 function healBookRecord(b: any): any {
   if (!b) return b;
   const healed = { ...b };
   
-  // 1. Heal Title if empty or null
+  // Normalize accession number to 10 digits
+  if (healed.accession_no) {
+    healed.accession_no = formatAccessionNo(healed.accession_no);
+  }
   if (!healed.title || String(healed.title).trim() === '') {
     const descMatch = String(healed.description || '').match(/หนังสือ\s+["“'‘]([^"”'’]+)["”'’]/);
     if (descMatch) {
@@ -881,8 +898,8 @@ async function initializeCache() {
           
           const author = String(r[4] || r[5] || r[8] || 'ไม่ระบุผู้แต่ง').replace(/[\/]\s*$/, '').trim();
           const rawAccession = String(r[2] || '').trim();
-          const accessionNo = rawAccession || String(i);
-          const barcode = rawAccession || `B${String(i).padStart(7, '0')}`;
+          const accessionNo = formatAccessionNo(rawAccession || String(i));
+          const barcode = accessionNo || `B${String(i).padStart(7, '0')}`;
           const isbn = String(r[3] || '').trim() || barcode;
           const ddc = String(r[9] || '').trim();
           const callSub = String(r[10] || '').trim();
@@ -1205,6 +1222,76 @@ function calculateSimilarityScore(
 
 // --- API Endpoints ---
 
+// Helper function to group multiple copies of books sharing the same ISBN or title
+function groupBooksForDisplay(rawBooks: any[]): any[] {
+  const groupMap = new Map<string, any>();
+
+  for (const b of rawBooks) {
+    const cleanIsbn = String(b.isbn || '').replace(/[^0-9X]/gi, '');
+    const cleanTitle = String(b.title || '').replace(/[:=;/\\.,\s]/g, '').toLowerCase();
+    const groupKey = (cleanIsbn && cleanIsbn.length >= 8) 
+      ? `isbn_${cleanIsbn}` 
+      : (cleanTitle.length >= 3 ? `title_${cleanTitle}` : `id_${b.id}`);
+
+    const rawAcc = String(b.accession_no || b.barcode || b.id || '').trim();
+    const acc = formatAccessionNo(rawAcc);
+    const copyObj = {
+      id: b.id,
+      accession_no: acc,
+      barcode: b.barcode || acc,
+      call_number: b.call_number || '',
+      status: b.status || 'พร้อมให้บริการ',
+      created_at: b.created_at
+    };
+
+    if (!groupMap.has(groupKey)) {
+      groupMap.set(groupKey, {
+        ...b,
+        accession_no: acc,
+        copy_count: 1,
+        copies_list: [copyObj],
+        accession_numbers: acc ? [acc] : []
+      });
+    } else {
+      const existing = groupMap.get(groupKey)!;
+      existing.copy_count = (existing.copy_count || 1) + 1;
+      if (!existing.copies_list) existing.copies_list = [];
+      existing.copies_list.push(copyObj);
+      if (!existing.accession_numbers) existing.accession_numbers = [];
+      if (acc && !existing.accession_numbers.includes(acc)) {
+        existing.accession_numbers.push(acc);
+      }
+      // Prefer non-empty metadata if the first copy missed something
+      if ((!existing.cover_image || existing.cover_image === '-') && b.cover_image && b.cover_image !== '-') {
+        existing.cover_image = b.cover_image;
+      }
+      if (!existing.call_number && b.call_number) existing.call_number = b.call_number;
+      if (!existing.ddc && b.ddc) existing.ddc = b.ddc;
+    }
+  }
+
+  const parseAcc = (val: string) => {
+    const m = String(val).match(/\d+/);
+    return m ? parseInt(m[0], 10) : Infinity;
+  };
+
+  return Array.from(groupMap.values()).map(gb => {
+    if (gb.copies_list && Array.isArray(gb.copies_list)) {
+      gb.copies_list.sort((c1: any, c2: any) => {
+        const n1 = parseAcc(c1.accession_no);
+        const n2 = parseAcc(c2.accession_no);
+        if (n1 !== n2 && n1 !== Infinity && n2 !== Infinity) return n1 - n2;
+        return String(c1.accession_no).localeCompare(String(c2.accession_no));
+      });
+      gb.copies_list = gb.copies_list.map((c: any, idx: number) => ({
+        ...c,
+        copy_no: idx + 1
+      }));
+    }
+    return gb;
+  });
+}
+
 // Get all books with filter, search and pagination
 app.get('/api/books', async (req, res) => {
   try {
@@ -1219,6 +1306,7 @@ app.get('/api/books', async (req, res) => {
     const qCategory = req.query.category ? String(req.query.category) : '';
     const qPublisher = req.query.publisher ? String(req.query.publisher) : '';
     const qSort = req.query.sort ? String(req.query.sort) : 'title';
+    const shouldGroup = req.query.group !== 'false';
 
     let books: any[] = cachedBooks.map(b => {
       const healed = healBookRecord(b);
@@ -1228,6 +1316,10 @@ app.get('/api/books', async (req, res) => {
         accession_no: healed.accession_no || healed.barcode || ''
       };
     });
+
+    if (shouldGroup) {
+      books = groupBooksForDisplay(books);
+    }
 
     // Client-side filtering
     if (qCategory) {
@@ -1239,13 +1331,23 @@ app.get('/api/books', async (req, res) => {
     }
 
     if (qSearch) {
+      const qSearchClean = qSearch.replace(/^0+/, '');
+      const matchesAcc = (accVal: any) => {
+        if (!accVal) return false;
+        const str = String(accVal).toLowerCase();
+        if (str.includes(qSearch)) return true;
+        if (qSearchClean && str.replace(/^0+/, '').includes(qSearchClean)) return true;
+        return false;
+      };
       books = books.filter(b => 
         (b.title && b.title.toLowerCase().includes(qSearch)) || 
         (b.subtitle && b.subtitle.toLowerCase().includes(qSearch)) ||
         (b.author && b.author.toLowerCase().includes(qSearch)) || 
         (b.isbn && b.isbn.toLowerCase().includes(qSearch)) || 
         (b.barcode && b.barcode.toLowerCase().includes(qSearch)) ||
-        (b.accession_no && String(b.accession_no).toLowerCase().includes(qSearch)) ||
+        matchesAcc(b.accession_no) ||
+        (Array.isArray(b.accession_numbers) && b.accession_numbers.some((acc: string) => matchesAcc(acc))) ||
+        (Array.isArray(b.copies_list) && b.copies_list.some((c: any) => matchesAcc(c.accession_no) || String(c.barcode || '').toLowerCase().includes(qSearch))) ||
         (b.publisher && b.publisher.toLowerCase().includes(qSearch)) ||
         (b.category && b.category.toLowerCase().includes(qSearch)) ||
         (b.subject && b.subject.toLowerCase().includes(qSearch)) ||
@@ -1298,6 +1400,7 @@ app.get('/api/books', async (req, res) => {
     const page = parseInt(req.query.page as string) || 1;
     const limitNum = parseInt(req.query.limit as string) || 0;
     const total = books.length;
+    const totalCopies = cachedBooks.length;
 
     if (limitNum > 0) {
       const startIndex = (page - 1) * limitNum;
@@ -1306,12 +1409,13 @@ app.get('/api/books', async (req, res) => {
         success: true,
         books: paginatedBooks,
         total,
+        totalCopies,
         page,
         limit: limitNum,
         totalPages: Math.ceil(total / limitNum)
       });
     } else {
-      res.json({ success: true, books, total });
+      res.json({ success: true, books, total, totalCopies });
     }
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -1869,7 +1973,18 @@ app.get('/api/sheets/info', async (req, res) => {
 
 app.post('/api/sheets/sync', async (req, res) => {
   try {
-    const sheetUrl = req.body?.url || DEFAULT_GOOGLE_SHEET_URL;
+    let sheetUrl = req.body?.url || DEFAULT_GOOGLE_SHEET_URL;
+    // Auto-normalize edit URL to CSV export format
+    if (sheetUrl.includes('docs.google.com/spreadsheets') && !sheetUrl.includes('export?format=csv')) {
+      const idMatch = sheetUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+      const gidMatch = sheetUrl.match(/gid=([0-9]+)/);
+      if (idMatch) {
+        const docId = idMatch[1];
+        const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : '';
+        sheetUrl = `https://docs.google.com/spreadsheets/d/${docId}/export?format=csv${gidParam}`;
+      }
+    }
+
     console.log(`[GoogleSheetSync] Triggered sync from: ${sheetUrl}`);
 
     const response = await fetch(sheetUrl, {
@@ -1888,6 +2003,129 @@ app.post('/api/sheets/sync', async (req, res) => {
 
     if (rows.length < 2) {
       return res.status(400).json({ success: false, error: 'Google Sheet does not contain enough data.' });
+    }
+
+    // Helper to test if a cover image is a valid saved cover
+    const isValidCoverImage = (url: any): boolean => {
+      if (!url || typeof url !== 'string') return false;
+      const s = url.trim();
+      return s !== '' && s !== '-' && s !== 'null' && !s.includes('localhost');
+    };
+
+    // 1. Collect all existing cover images & customizations previously saved in database & cache
+    const existingCoverMap = new Map<string, { cover_image: string; cover_source?: string; illustration?: string }>();
+    const existingStatusMap = new Map<string, string>();
+    const isbnCoverMap = new Map<string, { cover_image: string; cover_source?: string; illustration?: string }>();
+
+    // 1a. Index from existing in-memory cachedBooks
+    if (Array.isArray(cachedBooks)) {
+      cachedBooks.forEach(b => {
+        if (isValidCoverImage(b.cover_image)) {
+          const entry = {
+            cover_image: b.cover_image.trim(),
+            cover_source: b.cover_source || 'database',
+            illustration: b.illustration
+          };
+          if (b.id) existingCoverMap.set(`id:${b.id}`, entry);
+          const acc = String(b.accession_no || '').trim();
+          if (acc) {
+            existingCoverMap.set(`acc:${acc}`, entry);
+            if (/^\d+$/.test(acc)) {
+              existingCoverMap.set(`acc:${acc.padStart(10, '0')}`, entry);
+              existingCoverMap.set(`acc:${acc.replace(/^0+/, '')}`, entry);
+            }
+          }
+          const bar = String(b.barcode || '').trim();
+          if (bar) existingCoverMap.set(`bar:${bar}`, entry);
+          const isb = String(b.isbn || '').replace(/[^0-9X]/gi, '');
+          if (isb && isb.length >= 8) {
+            // Priority to non-unsplash / non-default covers
+            const existingIsbnEntry = isbnCoverMap.get(isb);
+            const isQualityCover = !b.cover_image.includes('unsplash') && !b.cover_image.includes('openlibrary.org');
+            if (!existingIsbnEntry || isQualityCover) {
+              isbnCoverMap.set(isb, entry);
+            }
+          }
+        }
+        if (b.status && b.status !== 'พร้อมให้บริการ') {
+          if (b.id) existingStatusMap.set(`id:${b.id}`, b.status);
+          const acc = String(b.accession_no || '').trim();
+          if (acc) {
+            existingStatusMap.set(`acc:${acc}`, b.status);
+            if (/^\d+$/.test(acc)) {
+              existingStatusMap.set(`acc:${acc.padStart(10, '0')}`, b.status);
+              existingStatusMap.set(`acc:${acc.replace(/^0+/, '')}`, b.status);
+            }
+          }
+        }
+      });
+    }
+
+    // 1b. Index from Supabase books table
+    try {
+      const { data: supaBooks } = await supabase.from('books').select('id, accession_no, barcode, isbn, cover_image, cover_source, illustration, status');
+      if (supaBooks && supaBooks.length > 0) {
+        supaBooks.forEach(sb => {
+          if (isValidCoverImage(sb.cover_image)) {
+            const entry = {
+              cover_image: sb.cover_image.trim(),
+              cover_source: sb.cover_source || 'database',
+              illustration: sb.illustration
+            };
+            if (sb.id) existingCoverMap.set(`id:${sb.id}`, entry);
+            const acc = String(sb.accession_no || '').trim();
+            if (acc) {
+              existingCoverMap.set(`acc:${acc}`, entry);
+              if (/^\d+$/.test(acc)) {
+                existingCoverMap.set(`acc:${acc.padStart(10, '0')}`, entry);
+                existingCoverMap.set(`acc:${acc.replace(/^0+/, '')}`, entry);
+              }
+            }
+            const bar = String(sb.barcode || '').trim();
+            if (bar) existingCoverMap.set(`bar:${bar}`, entry);
+            const isb = String(sb.isbn || '').replace(/[^0-9X]/gi, '');
+            if (isb && isb.length >= 8) {
+              const isQualityCover = !sb.cover_image.includes('unsplash') && !sb.cover_image.includes('openlibrary.org');
+              const existingIsbnEntry = isbnCoverMap.get(isb);
+              if (!existingIsbnEntry || isQualityCover) {
+                isbnCoverMap.set(isb, entry);
+              }
+            }
+          }
+          if (sb.status && sb.status !== 'พร้อมให้บริการ') {
+            if (sb.id) existingStatusMap.set(`id:${sb.id}`, sb.status);
+            const acc = String(sb.accession_no || '').trim();
+            if (acc) {
+              existingStatusMap.set(`acc:${acc}`, sb.status);
+              if (/^\d+$/.test(acc)) {
+                existingStatusMap.set(`acc:${acc.padStart(10, '0')}`, sb.status);
+                existingStatusMap.set(`acc:${acc.replace(/^0+/, '')}`, sb.status);
+              }
+            }
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[GoogleSheetSync] Supabase books cover query note:', e);
+    }
+
+    // 1c. Index from Supabase book_customizations table
+    try {
+      const { data: customData } = await supabase.from('book_customizations').select('*');
+      if (customData && customData.length > 0) {
+        customData.forEach(item => {
+          if (isValidCoverImage(item.cover_image)) {
+            const entry = {
+              cover_image: item.cover_image.trim(),
+              cover_source: item.cover_source || 'manual',
+              illustration: item.illustration
+            };
+            if (item.id) existingCoverMap.set(`id:${item.id}`, entry);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[GoogleSheetSync] Supabase book_customizations query note:', e);
     }
 
     const categoriesSet = new Set<string>();
@@ -1917,8 +2155,8 @@ app.post('/api/sheets/sync', async (req, res) => {
 
       const author = String(r[4] || r[5] || r[8] || 'ไม่ระบุผู้แต่ง').replace(/[\/]\s*$/, '').trim();
       const rawAccession = String(r[2] || '').trim();
-      const accessionNo = rawAccession || String(i);
-      const barcode = rawAccession || `B${String(i).padStart(7, '0')}`;
+      const accessionNo = formatAccessionNo(rawAccession || String(i));
+      const barcode = accessionNo || `B${String(i).padStart(7, '0')}`;
       const isbn = String(r[3] || '').trim() || barcode;
       const ddc = String(r[9] || '').trim();
       const callSub = String(r[10] || '').trim();
@@ -1938,18 +2176,45 @@ app.post('/api/sheets/sync', async (req, res) => {
       const series = String(r[21] || '').trim();
       const translator = String(r[22] || '').trim();
       const rawStatus = String(r[27] || '').trim();
-      const status = rawStatus === 'ถูกยืม' || rawStatus === 'ถูกยืมแล้ว' ? 'ถูกยืมแล้ว' : 'พร้อมให้บริการ';
+      let status = rawStatus === 'ถูกยืม' || rawStatus === 'ถูกยืมแล้ว' ? 'ถูกยืมแล้ว' : 'พร้อมให้บริการ';
 
       const bookId = rawAccession ? `book_reg_${rawAccession}` : (barcode ? `book_reg_${barcode}` : `book_${isbn.replace(/[^a-zA-Z0-9]/g, '')}`);
 
       const rawIllustration = String(r[15] || '').trim();
       const cleanIsbn = isbn.replace(/[^a-zA-Z0-9]/g, '');
-      let coverImage = (cleanIsbn.length >= 10)
-        ? `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-M.jpg?default=https%3A%2F%2Fimages.unsplash.com%2Fphoto-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600`
-        : 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600';
+      const hasExplicitSheetCover = rawIllustration && (rawIllustration.startsWith('https://') || (rawIllustration.startsWith('http://') && !rawIllustration.includes('localhost')));
 
-      if (rawIllustration && (rawIllustration.startsWith('https://') || (rawIllustration.startsWith('http://') && !rawIllustration.includes('localhost')))) {
+      // Check previously preserved cover in database
+      const preserved = existingCoverMap.get(`id:${bookId}`) ||
+        existingCoverMap.get(`id:book_reg_${accessionNo}`) ||
+        existingCoverMap.get(`id:book_reg_${rawAccession.replace(/^0+/, '')}`) ||
+        (rawAccession ? existingCoverMap.get(`acc:${rawAccession}`) : null) ||
+        (accessionNo ? existingCoverMap.get(`acc:${accessionNo}`) : null) ||
+        (rawAccession ? existingCoverMap.get(`acc:${rawAccession.replace(/^0+/, '')}`) : null) ||
+        (barcode ? existingCoverMap.get(`bar:${barcode}`) : null) ||
+        (cleanIsbn.length >= 8 ? isbnCoverMap.get(cleanIsbn) : null);
+
+      let coverImage = '';
+      let coverSource = 'open_library';
+
+      if (hasExplicitSheetCover) {
         coverImage = rawIllustration;
+        coverSource = 'google_sheet';
+      } else if (preserved && isValidCoverImage(preserved.cover_image)) {
+        // PRESERVE PREVIOUS COVER FROM DATABASE - NEVER OVERWRITE!
+        coverImage = preserved.cover_image;
+        coverSource = preserved.cover_source || 'database';
+      } else {
+        // Fallback default only if no cover exists anywhere in database
+        coverImage = (cleanIsbn.length >= 10)
+          ? `https://covers.openlibrary.org/b/isbn/${cleanIsbn}-M.jpg?default=https%3A%2F%2Fimages.unsplash.com%2Fphoto-1544947950-fa07a98d237f%3Fauto%3Dformat%26fit%3Dcrop%26q%3D80%26w%3D600`
+          : 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600';
+      }
+
+      // Preserve status if previously recorded as borrowed
+      const preservedStatus = existingStatusMap.get(`id:${bookId}`) || (rawAccession ? existingStatusMap.get(`acc:${rawAccession}`) : null);
+      if (preservedStatus && status === 'พร้อมให้บริการ') {
+        status = preservedStatus;
       }
 
       booksToSave.push({
@@ -1975,8 +2240,9 @@ app.post('/api/sheets/sync', async (req, res) => {
         price,
         series,
         translator,
-        illustration: rawIllustration, // คอลัมน์ ภาพประกอบ
+        illustration: hasExplicitSheetCover ? rawIllustration : (preserved?.illustration || rawIllustration),
         cover_image: coverImage,
+        cover_source: coverSource,
         description: desc,
         status,
         source: 'Google Sheet (MARC 21)',
@@ -1984,30 +2250,33 @@ app.post('/api/sheets/sync', async (req, res) => {
       });
     }
 
-    // Preserve custom covers and manual edits saved in Supabase from being overwritten by raw Google Sheet data
-    try {
-      console.log('[GoogleSheetSync] Fetching custom edits and covers from Supabase...');
-      const { data: customData, error: customErr } = await supabase.from('book_customizations').select('*');
-      if (!customErr && customData && customData.length > 0) {
-        const customMap = new Map();
-        customData.forEach(item => {
-          customMap.set(item.id, item);
-        });
-        booksToSave = booksToSave.map(b => {
-          if (customMap.has(b.id)) {
-            const customBook = customMap.get(b.id);
-            return {
-              ...b,
-              ...customBook
-            };
-          }
-          return b;
-        });
-        console.log(`[GoogleSheetSync] Successfully merged ${customData.length} custom covers and edits from Supabase.`);
+    // Secondary pass: Ensure all multi-copy books sharing the same ISBN receive the highest-quality preserved cover
+    const multiCopyBestCover = new Map<string, { cover_image: string; cover_source: string }>();
+    booksToSave.forEach(b => {
+      const isb = String(b.isbn || '').replace(/[^0-9X]/gi, '');
+      if (isb && isb.length >= 8 && isValidCoverImage(b.cover_image)) {
+        const isQuality = !b.cover_image.includes('unsplash') && !b.cover_image.includes('openlibrary.org');
+        const existing = multiCopyBestCover.get(isb);
+        if (!existing || isQuality) {
+          multiCopyBestCover.set(isb, { cover_image: b.cover_image, cover_source: b.cover_source });
+        }
       }
-    } catch (sbErr) {
-      console.warn('[GoogleSheetSync] Failed to fetch and merge Supabase custom edits:', sbErr);
-    }
+    });
+
+    booksToSave = booksToSave.map(b => {
+      const isb = String(b.isbn || '').replace(/[^0-9X]/gi, '');
+      if (isb && isb.length >= 8 && multiCopyBestCover.has(isb)) {
+        const best = multiCopyBestCover.get(isb)!;
+        if (!b.cover_image || b.cover_image.includes('unsplash') || b.cover_image.includes('openlibrary.org')) {
+          return {
+            ...b,
+            cover_image: best.cover_image,
+            cover_source: best.cover_source
+          };
+        }
+      }
+      return b;
+    });
 
     // Save to server cache instantly!
     cachedBooks = booksToSave;
@@ -2130,12 +2399,15 @@ app.post('/api/books', async (req, res) => {
     // Support payload id or accession-based generation, allowing multiple copies of the same ISBN
     const cleanIsbn = String(bookData.isbn || '').replace(/[^a-zA-Z0-9]/g, '');
     const rawAcc = String(bookData.accession_no || bookData.barcode || '').trim();
-    const cleanAcc = rawAcc.replace(/[^a-zA-Z0-9]/g, '');
+    const formattedAcc = formatAccessionNo(rawAcc);
+    const cleanAcc = formattedAcc.replace(/[^a-zA-Z0-9]/g, '');
     const bookId = bookData.id || (cleanAcc ? `book_reg_${cleanAcc}` : (cleanIsbn ? `book_${cleanIsbn}_${Date.now()}` : `book_${Date.now()}`));
 
     const data = {
       ...bookData,
       id: bookId,
+      accession_no: formattedAcc || bookData.accession_no || '',
+      barcode: bookData.barcode || formattedAcc || '',
       created_at: bookData.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -2263,7 +2535,7 @@ app.post('/api/books/batch', async (req, res) => {
         call_number: String(b.call_number || '000').trim(),
         ddc: String(b.ddc || '').trim(),
         barcode: String(b.barcode || `B${Math.random().toString().substring(2, 9)}`).trim(),
-        accession_no: String(b.accession_no || b.barcode || '').trim(),
+        accession_no: formatAccessionNo(String(b.accession_no || b.barcode || '').trim()),
         cover_image: String(b.cover_image || 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=600').trim(),
         description: String(b.description || 'นำเข้าผ่านระบบไฟล์').trim(),
         status: b.status === 'ถูกยืมแล้ว' || b.status === 'ปรับปรุง' ? b.status : 'พร้อมให้บริการ',
@@ -2276,8 +2548,9 @@ app.post('/api/books/batch', async (req, res) => {
       results.items.push({ id: bookId, title: data.title });
     }
 
-    // Add all to cache
-    cachedBooks = [...batchBooks, ...cachedBooks];
+    // Add all to cache, replacing existing entries by id to avoid duplicate keys
+    const batchIdSet = new Set(batchBooks.map(b => b.id));
+    cachedBooks = [...batchBooks, ...cachedBooks.filter(cb => !batchIdSet.has(cb.id))];
     
     // Add missing categories to cache
     batchBooks.forEach(b => {
@@ -2305,7 +2578,7 @@ app.post('/api/books/batch', async (req, res) => {
   }
 });
 
-// Update book (Admin)
+// Update book (Admin) - Updates the edited book and all sibling copies sharing the same ISBN
 app.put('/api/books/:id', async (req, res) => {
   try {
     const bookId = req.params.id;
@@ -2316,61 +2589,87 @@ app.put('/api/books/:id', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Book not found' });
     }
 
+    const nowIso = new Date().toISOString();
     const updatedBook = {
       ...cachedBooks[idx],
       ...bookData,
-      updated_at: new Date().toISOString()
+      updated_at: nowIso
     };
 
-    // Update in cache
+    const targetIsbn = String(bookData.isbn || cachedBooks[idx].isbn || '').replace(/[^0-9X]/gi, '');
+    const targetTitle = String(bookData.title || cachedBooks[idx].title || '').replace(/[:=;/\\.,\s]/g, '').toLowerCase();
+
+    // Identify all sibling copies in cachedBooks that share this same ISBN or title
+    const siblingIndices: number[] = [];
+    cachedBooks.forEach((b, i) => {
+      const bIsbn = String(b.isbn || '').replace(/[^0-9X]/gi, '');
+      const bTitle = String(b.title || '').replace(/[:=;/\\.,\s]/g, '').toLowerCase();
+      if (targetIsbn && targetIsbn.length >= 8 && bIsbn && bIsbn === targetIsbn) {
+        siblingIndices.push(i);
+      } else if (targetTitle && targetTitle.length >= 3 && bTitle === targetTitle) {
+        siblingIndices.push(i);
+      } else if (i === idx) {
+        siblingIndices.push(i);
+      }
+    });
+
+    // Shared bibliographic fields that must propagate to all sibling copies
+    const sharedBibliographicKeys = [
+      'title', 'subtitle', 'author', 'writer', 'co_authors', 'publisher', 'publication_place',
+      'publication_year', 'edition', 'pages', 'language', 'category', 'keywords',
+      'call_number', 'ddc', 'call_sub', 'price', 'series', 'translator',
+      'illustration', 'cover_image', 'cover_source', 'description'
+    ];
+
+    let sharedSubject = updatedBook.subject;
+    if (updatedBook.subject_2 || updatedBook.subject_3 || updatedBook.all650Subjects) {
+      const subs = [
+        updatedBook.subject,
+        updatedBook.subject_2,
+        updatedBook.subject_3,
+        ...(Array.isArray(updatedBook.all650Subjects) ? updatedBook.all650Subjects : [])
+      ].filter(Boolean);
+      const unique = Array.from(new Set(subs.flatMap((s: any) => String(s).split(/[,;\n]+/)).map((s: string) => s.trim()))).filter((s: string) => s && s !== '-' && s !== 'ทั่วไป');
+      if (unique.length > 0) {
+        sharedSubject = unique.join(' ; ');
+      }
+    }
+    updatedBook.subject = sharedSubject;
+
+    // Update target book in cache
     cachedBooks[idx] = updatedBook;
+
+    // Update all other sibling copies with shared bibliographic metadata
+    for (const sibIdx of siblingIndices) {
+      if (sibIdx === idx) continue;
+      const sib = cachedBooks[sibIdx];
+      const updatedSib = { ...sib, updated_at: nowIso, subject: sharedSubject };
+      for (const k of sharedBibliographicKeys) {
+        if (updatedBook[k] !== undefined) {
+          (updatedSib as any)[k] = updatedBook[k];
+        }
+      }
+      cachedBooks[sibIdx] = updatedSib;
+    }
+
     saveCacheToDisk();
 
-    // Immediate Supabase update
+    // Supabase update: update the specific book + update all sibling copies
     try {
       const supaUpdatePayload: any = {
-        updated_at: updatedBook.updated_at
+        updated_at: nowIso,
+        subject: sharedSubject
       };
-      if (updatedBook.cover_image !== undefined) supaUpdatePayload.cover_image = updatedBook.cover_image;
-      if (updatedBook.illustration !== undefined) supaUpdatePayload.illustration = updatedBook.illustration;
-      if (updatedBook.cover_source !== undefined) supaUpdatePayload.cover_source = updatedBook.cover_source;
-      if (updatedBook.title !== undefined) supaUpdatePayload.title = updatedBook.title;
-      if (updatedBook.subtitle !== undefined) supaUpdatePayload.subtitle = updatedBook.subtitle;
-      if (updatedBook.author !== undefined) supaUpdatePayload.author = updatedBook.author;
-      if (updatedBook.co_authors !== undefined) supaUpdatePayload.co_authors = updatedBook.co_authors;
-      if (updatedBook.publisher !== undefined) supaUpdatePayload.publisher = updatedBook.publisher;
-      if (updatedBook.publication_year !== undefined) supaUpdatePayload.publication_year = updatedBook.publication_year;
-      if (updatedBook.edition !== undefined) supaUpdatePayload.edition = updatedBook.edition;
-      if (updatedBook.pages !== undefined) supaUpdatePayload.pages = updatedBook.pages;
-      if (updatedBook.category !== undefined) supaUpdatePayload.category = updatedBook.category;
-      if (updatedBook.subject_2 || updatedBook.subject_3 || updatedBook.all650Subjects) {
-        const subs = [
-          updatedBook.subject,
-          updatedBook.subject_2,
-          updatedBook.subject_3,
-          ...(Array.isArray(updatedBook.all650Subjects) ? updatedBook.all650Subjects : [])
-        ].filter(Boolean);
-        const unique = Array.from(new Set(subs.flatMap((s: any) => String(s).split(/[,;\n]+/)).map((s: string) => s.trim()))).filter((s: string) => s && s !== '-' && s !== 'ทั่วไป');
-        if (unique.length > 0) {
-          supaUpdatePayload.subject = unique.join(' ; ');
-          updatedBook.subject = supaUpdatePayload.subject;
-        } else if (updatedBook.subject !== undefined) {
-          supaUpdatePayload.subject = updatedBook.subject;
-        }
-      } else if (updatedBook.subject !== undefined) {
-        supaUpdatePayload.subject = updatedBook.subject;
+      for (const k of sharedBibliographicKeys) {
+        if (updatedBook[k] !== undefined) supaUpdatePayload[k] = updatedBook[k];
       }
-      if (updatedBook.keywords !== undefined) supaUpdatePayload.keywords = updatedBook.keywords;
-      if (updatedBook.call_number !== undefined) supaUpdatePayload.call_number = updatedBook.call_number;
-      if (updatedBook.ddc !== undefined) supaUpdatePayload.ddc = updatedBook.ddc;
+
+      // Also copy accession/barcode if explicitly passed for this specific book
+      if (updatedBook.accession_no !== undefined) supaUpdatePayload.accession_no = formatAccessionNo(updatedBook.accession_no);
       if (updatedBook.barcode !== undefined) supaUpdatePayload.barcode = updatedBook.barcode;
-      if (updatedBook.accession_no !== undefined) supaUpdatePayload.accession_no = updatedBook.accession_no;
-      if (updatedBook.price !== undefined) supaUpdatePayload.price = updatedBook.price;
-      if (updatedBook.series !== undefined) supaUpdatePayload.series = updatedBook.series;
-      if (updatedBook.translator !== undefined) supaUpdatePayload.translator = updatedBook.translator;
-      if (updatedBook.description !== undefined) supaUpdatePayload.description = updatedBook.description;
       if (updatedBook.status !== undefined) supaUpdatePayload.status = updatedBook.status;
 
+      // Update primary book in Supabase
       const { error: bErr } = await supabase.from('books').update(supaUpdatePayload).eq('id', bookId);
       if (bErr) {
         console.error('[Supabase Update] Error updating book:', bErr.message);
@@ -2378,22 +2677,40 @@ app.put('/api/books/:id', async (req, res) => {
         console.log(`[Supabase Update] Successfully updated book ${bookId} in Supabase!`);
       }
 
-      // Also persist to book_customizations for fast cross-device sync and to safeguard against future sheet syncs
-      const { error: cErr } = await supabase.from('book_customizations').upsert({
-        id: bookId,
-        cover_image: updatedBook.cover_image,
-        illustration: updatedBook.illustration || updatedBook.cover_image,
-        cover_source: updatedBook.cover_source || 'manual',
-        status: updatedBook.status,
-        title: updatedBook.title,
-        author: updatedBook.author,
-        publisher: updatedBook.publisher,
-        category: updatedBook.category,
-        call_number: updatedBook.call_number,
-        updated_at: updatedBook.updated_at
-      }, { onConflict: 'id' });
-      if (cErr) {
-        console.error('[Supabase Update] Error updating customization:', cErr.message);
+      // Update all other sibling copies in Supabase with shared bibliographic metadata
+      const otherSiblingIds = Array.from(new Set(siblingIndices.map(i => cachedBooks[i].id).filter(id => id !== bookId)));
+      if (otherSiblingIds.length > 0) {
+        const sharedUpdatePayload: any = {
+          updated_at: nowIso,
+          subject: sharedSubject
+        };
+        for (const k of sharedBibliographicKeys) {
+          if (updatedBook[k] !== undefined) sharedUpdatePayload[k] = updatedBook[k];
+        }
+        const { error: sibErr } = await supabase.from('books').update(sharedUpdatePayload).in('id', otherSiblingIds);
+        if (sibErr) {
+          console.warn('[Supabase Update] Error updating sibling copies:', sibErr.message);
+        } else {
+          console.log(`[Supabase Update] Synced shared metadata across ${otherSiblingIds.length} sibling copies in Supabase!`);
+        }
+      }
+
+      // Upsert into book_customizations for each copy
+      const allSiblingIds = Array.from(new Set(siblingIndices.map(i => cachedBooks[i].id)));
+      for (const sId of allSiblingIds) {
+        await supabase.from('book_customizations').upsert({
+          id: sId,
+          cover_image: updatedBook.cover_image,
+          illustration: updatedBook.illustration || updatedBook.cover_image,
+          cover_source: updatedBook.cover_source || 'manual',
+          status: updatedBook.status,
+          title: updatedBook.title,
+          author: updatedBook.author,
+          publisher: updatedBook.publisher,
+          category: updatedBook.category,
+          call_number: updatedBook.call_number,
+          updated_at: nowIso
+        }, { onConflict: 'id' });
       }
     } catch (sbErr) {
       console.warn('Update in Supabase failed for book:', sbErr);
@@ -2402,7 +2719,12 @@ app.put('/api/books/:id', async (req, res) => {
     // Broadcast real-time book update to all clients
     broadcastRealtime({ type: 'BOOK_UPDATED', payload: updatedBook });
 
-    res.json({ success: true, id: bookId, book: updatedBook });
+    res.json({ 
+      success: true, 
+      id: bookId, 
+      book: updatedBook, 
+      copiesUpdated: siblingIndices.length 
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
