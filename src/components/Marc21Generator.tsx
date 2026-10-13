@@ -40,7 +40,10 @@ import {
   Wifi,
   WifiOff,
   Code,
-  CheckCircle2
+  CheckCircle2,
+  Tag,
+  Tags,
+  Bookmark
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
@@ -57,6 +60,97 @@ export interface SystemAuthorCutterItem {
   bookCount?: number;
   source?: string;
 }
+
+export interface SystemSubjectDdcItem {
+  id: string;
+  subject: string;
+  primaryDdc: string;
+  allDdcs: { ddc: string; count: number }[];
+  category: string;
+  bookCount: number;
+  sampleTitles: string[];
+  source: string;
+}
+
+export const getDdcCategoryName = (ddc: string): string => {
+  if (!ddc || ddc === '-') return 'ไม่ระบุหมวดหมู่';
+  const clean = ddc.trim();
+  if (clean.startsWith('ด')) return 'หนังสือเด็ก (ด)';
+  if (clean.startsWith('ย')) return 'หนังสือเยาวชน (ย)';
+  if (clean.startsWith('น')) return 'นวนิยาย (น)';
+  if (clean.startsWith('ร')) return 'เรื่องสั้น (ร)';
+  
+  const num = parseFloat(clean);
+  if (!isNaN(num)) {
+    if (num < 100) return '000 วิทยาการคอมพิวเตอร์/ความรู้ทั่วไป';
+    if (num < 200) return '100 ปรัชญาและจิตวิทยา';
+    if (num < 300) return '200 ศาสนา';
+    if (num < 400) return '300 สังคมศาสตร์/เศรษฐศาสตร์';
+    if (num < 500) return '400 ภาษาศาสตร์';
+    if (num < 600) return '500 วิทยาศาสตร์บริสุทธิ์';
+    if (num < 700) return '600 เทคโนโลยี/การแพทย์/การจัดการ';
+    if (num < 800) return '700 ศิลปะและนันทนาการ';
+    if (num < 900) return '800 วรรณกรรม';
+    if (num < 1000) return '900 ประวัติศาสตร์และภูมิศาสตร์';
+  }
+  return 'หมวดทั่วไป';
+};
+
+export const STANDARD_SUBJECT_DDC_MAPPINGS: { subject: string; ddc: string; category?: string }[] = [
+  { subject: 'จิตวิทยา', ddc: '150', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'จิตวิทยาประยุกต์', ddc: '158', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'การดำเนินชีวิต', ddc: '158.1', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'การพัฒนาตนเอง', ddc: '158.1', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'มนุษยสัมพันธ์', ddc: '158.2', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'จิตวิทยาเด็ก', ddc: '155.4', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'จิตวิทยาพัฒนาการ', ddc: '155', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'การแก้ปัญหาในเด็ก.', ddc: '155.4', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'การเงินส่วนบุคคล', ddc: '332.024', category: '300 สังคมศาสตร์/เศรษฐศาสตร์' },
+  { subject: 'การลงทุน', ddc: '332.6', category: '300 สังคมศาสตร์/เศรษฐศาสตร์' },
+  { subject: 'การลงทุนส่วนบุคคล.', ddc: '332.678', category: '300 สังคมศาสตร์/เศรษฐศาสตร์' },
+  { subject: 'เศรษฐศาสตร์', ddc: '330', category: '300 สังคมศาสตร์/เศรษฐศาสตร์' },
+  { subject: 'การบริหารธุรกิจ', ddc: '658', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'การจัดการ', ddc: '658.4', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'การตลาด', ddc: '658.8', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'การบริหารงานบุคคล', ddc: '658.3', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'การบัญชี', ddc: '657', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'คอมพิวเตอร์', ddc: '004', category: '000 วิทยาการคอมพิวเตอร์/ความรู้ทั่วไป' },
+  { subject: 'ปัญญาประดิษฐ์', ddc: '006.3', category: '000 วิทยาการคอมพิวเตอร์/ความรู้ทั่วไป' },
+  { subject: 'เทคโนโลยีสารสนเทศ', ddc: '004', category: '000 วิทยาการคอมพิวเตอร์/ความรู้ทั่วไป' },
+  { subject: 'การเขียนโปรแกรมคอมพิวเตอร์', ddc: '005.1', category: '000 วิทยาการคอมพิวเตอร์/ความรู้ทั่วไป' },
+  { subject: 'สุขภาพและการดูแลตนเอง', ddc: '613', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'อาหารและโภชนาการ', ddc: '613.2', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'อาหารและโภชนาการสำหรับเด็ก.', ddc: '613.2', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'การแพทย์', ddc: '610', category: '600 เทคโนโลยี/การแพทย์/การจัดการ' },
+  { subject: 'วิทยาศาสตร์', ddc: '500', category: '500 วิทยาศาสตร์บริสุทธิ์' },
+  { subject: 'คณิตศาสตร์', ddc: '510', category: '500 วิทยาศาสตร์บริสุทธิ์' },
+  { subject: 'ฟิสิกส์', ddc: '530', category: '500 วิทยาศาสตร์บริสุทธิ์' },
+  { subject: 'เคมี', ddc: '540', category: '500 วิทยาศาสตร์บริสุทธิ์' },
+  { subject: 'ชีววิทยา', ddc: '570', category: '500 วิทยาศาสตร์บริสุทธิ์' },
+  { subject: 'สิ่งแวดล้อม', ddc: '333.7', category: '300 สังคมศาสตร์/เศรษฐศาสตร์' },
+  { subject: 'การศึกษาและการเรียนรู้', ddc: '370', category: '300 สังคมศาสตร์/เศรษฐศาสตร์' },
+  { subject: 'ภาษาอังกฤษ', ddc: '420', category: '400 ภาษาศาสตร์' },
+  { subject: 'ภาษาไทย', ddc: '495.91', category: '400 ภาษาศาสตร์' },
+  { subject: 'การสื่อสาร', ddc: '302.2', category: '300 สังคมศาสตร์/เศรษฐศาสตร์' },
+  { subject: 'วรรณกรรมสำหรับเด็ก', ddc: 'ด', category: 'หนังสือเด็ก (ด)' },
+  { subject: 'นิทานภาพ', ddc: 'ด', category: 'หนังสือเด็ก (ด)' },
+  { subject: 'การดำเนินชีวิต --วรรณกรรมสำหรับเด็ก', ddc: 'ด', category: 'หนังสือเด็ก (ด)' },
+  { subject: 'ชีวประวัติ--สำหรับเด็ก.', ddc: 'ด', category: 'หนังสือเด็ก (ด)' },
+  { subject: 'การ์ตูนความรู้', ddc: 'ย', category: 'หนังสือเยาวชน (ย)' },
+  { subject: 'นวนิยาย', ddc: '895.913', category: '800 วรรณกรรม' },
+  { subject: 'นวนิยายไทย', ddc: '895.913', category: '800 วรรณกรรม' },
+  { subject: 'นวนิยายแปล', ddc: '823', category: '800 วรรณกรรม' },
+  { subject: 'เรื่องสั้น', ddc: '895.913', category: '800 วรรณกรรม' },
+  { subject: 'ประวัติศาสตร์', ddc: '900', category: '900 ประวัติศาสตร์และภูมิศาสตร์' },
+  { subject: 'ประวัติศาสตร์ไทย', ddc: '959.3', category: '900 ประวัติศาสตร์และภูมิศาสตร์' },
+  { subject: 'ชีวประวัติ', ddc: '920', category: '900 ประวัติศาสตร์และภูมิศาสตร์' },
+  { subject: 'พุทธศาสนา', ddc: '294.3', category: '200 ศาสนา' },
+  { subject: 'ปรัชญาและศาสนา', ddc: '100', category: '100 ปรัชญาและจิตวิทยา' },
+  { subject: 'การท่องเที่ยว', ddc: '910.4', category: '900 ประวัติศาสตร์และภูมิศาสตร์' },
+  { subject: 'ศิลปะ', ddc: '700', category: '700 ศิลปะและนันทนาการ' },
+  { subject: 'ดนตรี', ddc: '780', category: '700 ศิลปะและนันทนาการ' },
+  { subject: 'กีฬาและการออกกำลังกาย', ddc: '796', category: '700 ศิลปะและนันทนาการ' }
+];
 
 export function isCorporateAuthor(name: string): boolean {
   if (!name) return false;
@@ -1037,6 +1131,92 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const [dbBooksAuthors, setDbBooksAuthors] = useState<SystemAuthorCutterItem[]>([]);
   const [isLoadingDbAuthors, setIsLoadingDbAuthors] = useState(false);
 
+  // Subject Headings & DDC Classification Modal States (Tag 650 & Tag 082 $a)
+  const [isSubjectHeadingsModalOpen, setIsSubjectHeadingsModalOpen] = useState(false);
+  const [subjectSearchTerm, setSubjectSearchTerm] = useState('');
+  const [subjectCategoryFilter, setSubjectCategoryFilter] = useState<string>('all');
+  const [dbBooksSubjects, setDbBooksSubjects] = useState<SystemSubjectDdcItem[]>([]);
+  const [isLoadingDbSubjects, setIsLoadingDbSubjects] = useState(false);
+
+  // Load and assemble all subject headings and their DDCs from database when modal opens
+  useEffect(() => {
+    if (!isSubjectHeadingsModalOpen) return;
+    let isMounted = true;
+    const fetchDbSubjects = async () => {
+      setIsLoadingDbSubjects(true);
+      try {
+        const { data, error } = await supabase
+          .from('books')
+          .select('subject, category, call_number, title')
+          .limit(3000);
+        if (!error && Array.isArray(data) && isMounted) {
+          const map = new Map<string, { ddcCounts: Map<string, number>; count: number; titles: Set<string>; cat?: string }>();
+          data.forEach((b: any) => {
+            const rawSubj = (b.subject || '').trim();
+            if (rawSubj && rawSubj !== '-' && rawSubj !== 'ทั่วไป') {
+              let extractedDdc = '';
+              if (b.call_number) {
+                const parts = b.call_number.trim().split(/\s+/);
+                if (parts.length > 0) {
+                  const first = parts[0];
+                  if (first.startsWith('ด') || first.startsWith('ย') || first.startsWith('น') || first.startsWith('ร')) {
+                    extractedDdc = first.charAt(0);
+                  } else if (/^\d+(\.\d+)?$/.test(first)) {
+                    extractedDdc = first;
+                  }
+                }
+              }
+
+              const subList = rawSubj.split(/[,;\n]+/).map((s: string) => s.trim().replace(/[\.\,\:\/]+$/, '')).filter(Boolean);
+              subList.forEach((cleanSubj: string) => {
+                if (!cleanSubj || cleanSubj === '-' || cleanSubj === 'ทั่วไป') return;
+                if (!map.has(cleanSubj)) {
+                  map.set(cleanSubj, {
+                    ddcCounts: new Map(),
+                    count: 0,
+                    titles: new Set(),
+                    cat: b.category || undefined
+                  });
+                }
+                const entry = map.get(cleanSubj)!;
+                entry.count++;
+                if (b.title && entry.titles.size < 3) {
+                  entry.titles.add(b.title.trim().replace(/[\.\,\:\/]+$/, ''));
+                }
+                if (extractedDdc) {
+                  entry.ddcCounts.set(extractedDdc, (entry.ddcCounts.get(extractedDdc) || 0) + 1);
+                }
+              });
+            }
+          });
+
+          const items: SystemSubjectDdcItem[] = Array.from(map.entries()).map(([subj, val], idx) => {
+            const ddcArr = Array.from(val.ddcCounts.entries()).map(([ddc, count]) => ({ ddc, count }));
+            ddcArr.sort((a, b) => b.count - a.count);
+            const primaryDdc = ddcArr[0]?.ddc || '-';
+            return {
+              id: `db_subj_${idx}`,
+              subject: subj,
+              primaryDdc,
+              allDdcs: ddcArr,
+              category: val.cat || getDdcCategoryName(primaryDdc),
+              bookCount: val.count,
+              sampleTitles: Array.from(val.titles),
+              source: 'ฐานข้อมูลห้องสมุด'
+            };
+          });
+          setDbBooksSubjects(items);
+        }
+      } catch (err) {
+        console.warn('DB subjects fetch note:', err);
+      } finally {
+        if (isMounted) setIsLoadingDbSubjects(false);
+      }
+    };
+    fetchDbSubjects();
+    return () => { isMounted = false; };
+  }, [isSubjectHeadingsModalOpen]);
+
   // Load and assemble all system authors from database and current session
   useEffect(() => {
     if (!isCutterTableOpen) return;
@@ -1188,6 +1368,150 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       return matchSearch && matchType;
     });
   }, [allSystemAuthors, cutterSearchTerm, cutterTypeFilter]);
+
+  // Memoized aggregation of all system subject headings and their DDC classification
+  const allSystemSubjects = React.useMemo(() => {
+    const map = new Map<string, {
+      subject: string;
+      ddcCounts: Map<string, number>;
+      bookCount: number;
+      sampleTitles: Set<string>;
+      source: string;
+      category?: string;
+    }>();
+
+    const addSubjDdc = (
+      subjRaw: string,
+      ddcRaw?: string,
+      titleRaw?: string,
+      source = 'ระบบบรรณานุกรม (MARC 21)',
+      predefinedCat?: string
+    ) => {
+      if (!subjRaw) return;
+      const s = subjRaw.trim().replace(/[\.\,\:\/]+$/, '').trim();
+      if (!s || s === '-' || s === 'ทั่วไป') return;
+
+      let d = (ddcRaw || '').trim().replace(/[\.\,\:\/]+$/, '').trim();
+      if (d === '-' || (d === '000' && !s.includes('คอมพิวเตอร์') && !s.includes('ความรู้ทั่วไป'))) {
+        d = '';
+      }
+
+      if (!map.has(s)) {
+        map.set(s, {
+          subject: s,
+          ddcCounts: new Map(),
+          bookCount: 0,
+          sampleTitles: new Set(),
+          source,
+          category: predefinedCat
+        });
+      }
+
+      const item = map.get(s)!;
+      if (titleRaw) {
+        item.bookCount++;
+        const cleanTitle = titleRaw.trim().replace(/[\.\,\:\/]+$/, '').trim();
+        if (cleanTitle && item.sampleTitles.size < 3) {
+          item.sampleTitles.add(cleanTitle);
+        }
+      }
+      if (d) {
+        item.ddcCounts.set(d, (item.ddcCounts.get(d) || 0) + 1);
+      }
+    };
+
+    // 1. Curated standard library subject-DDC mappings
+    STANDARD_SUBJECT_DDC_MAPPINGS.forEach(std => {
+      addSubjDdc(std.subject, std.ddc, undefined, 'มาตรฐานบรรณารักษ์', std.category);
+    });
+
+    // 2. Database books subjects
+    dbBooksSubjects.forEach(dbS => {
+      if (!map.has(dbS.subject)) {
+        map.set(dbS.subject, {
+          subject: dbS.subject,
+          ddcCounts: new Map(dbS.allDdcs.map(x => [x.ddc, x.count])),
+          bookCount: dbS.bookCount,
+          sampleTitles: new Set(dbS.sampleTitles),
+          source: 'ฐานข้อมูลห้องสมุด',
+          category: dbS.category
+        });
+      } else {
+        const cur = map.get(dbS.subject)!;
+        dbS.allDdcs.forEach(x => {
+          cur.ddcCounts.set(x.ddc, (cur.ddcCounts.get(x.ddc) || 0) + x.count);
+        });
+        cur.bookCount += dbS.bookCount;
+        dbS.sampleTitles.forEach(t => {
+          if (cur.sampleTitles.size < 3) cur.sampleTitles.add(t);
+        });
+      }
+    });
+
+    // 3. Current active MARC records (including all records from Supabase marc21_records)
+    records.forEach(r => {
+      const ddc = (r.ddc_082a || '').trim();
+      const title = (r.title_245a || '').trim();
+
+      if (r.subject_650a) {
+        r.subject_650a.split(/[,;\n]+/).forEach(p => addSubjDdc(p, ddc, title));
+      }
+      if (r.subject_650_2) {
+        r.subject_650_2.split(/[,;\n]+/).forEach(p => addSubjDdc(p, ddc, title));
+      }
+      if (r.subject_650_3) {
+        r.subject_650_3.split(/[,;\n]+/).forEach(p => addSubjDdc(p, ddc, title));
+      }
+      if (Array.isArray(r.marc_tags)) {
+        r.marc_tags.forEach((tag: any) => {
+          if (tag.tagID === '650' || tag.tag === '650') {
+            const parsed = parseMarcSubfield(tag.data || '', 'a') || tag.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
+            if (parsed) addSubjDdc(parsed, ddc, title);
+          }
+        });
+      }
+    });
+
+    const list: SystemSubjectDdcItem[] = Array.from(map.values()).map((val, idx) => {
+      const ddcArr = Array.from(val.ddcCounts.entries()).map(([ddc, count]) => ({ ddc, count }));
+      ddcArr.sort((a, b) => b.count - a.count);
+      const primaryDdc = ddcArr[0]?.ddc || '-';
+      const category = val.category || getDdcCategoryName(primaryDdc);
+      return {
+        id: `sys_subj_${idx}`,
+        subject: val.subject,
+        primaryDdc,
+        allDdcs: ddcArr,
+        category,
+        bookCount: val.bookCount,
+        sampleTitles: Array.from(val.sampleTitles),
+        source: val.source
+      };
+    });
+
+    list.sort((a, b) => a.subject.localeCompare(b.subject, 'th', { sensitivity: 'base' }));
+    return list;
+  }, [dbBooksSubjects, records]);
+
+  const filteredSystemSubjects = React.useMemo(() => {
+    const q = subjectSearchTerm.trim().toLowerCase();
+    return allSystemSubjects.filter(item => {
+      const matchSearch = !q ||
+        item.subject.toLowerCase().includes(q) ||
+        item.primaryDdc.toLowerCase().includes(q) ||
+        item.allDdcs.some(d => d.ddc.toLowerCase().includes(q)) ||
+        item.category.toLowerCase().includes(q);
+
+      const matchCategory = subjectCategoryFilter === 'all' || (() => {
+        if (subjectCategoryFilter === 'children') {
+          return item.primaryDdc === 'ด' || item.primaryDdc === 'ย' || item.category.includes('เด็ก') || item.category.includes('เยาวชน');
+        }
+        return item.primaryDdc.startsWith(subjectCategoryFilter) || item.category.startsWith(subjectCategoryFilter);
+      })();
+
+      return matchSearch && matchCategory;
+    });
+  }, [allSystemSubjects, subjectSearchTerm, subjectCategoryFilter]);
 
   // Dynamic available subject headings collected across all records, search results, and standard list
   const allAvailableSubjects = React.useMemo(() => {
@@ -3356,6 +3680,14 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setIsSubjectHeadingsModalOpen(true)}
+              className="px-3.5 py-2.5 bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-100 rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-emerald-400/40 transition flex items-center gap-2 shadow-sm cursor-pointer"
+            >
+              <Tags className="w-4 h-4 text-emerald-300" />
+              <span>หัวเรื่อง (tag650)</span>
+            </button>
             <button
               onClick={() => setIsCutterTableOpen(true)}
               className="px-3.5 py-2.5 bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-100 rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-emerald-400/40 transition flex items-center gap-2 shadow-sm cursor-pointer"
@@ -6084,6 +6416,236 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                 className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer"
               >
                 ปิดหน้าต่างตารางคัตเตอร์
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Subject Headings & DDC Classification Modal (Tag 650 & Tag 082 $a) */}
+      {isSubjectHeadingsModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto space-y-5 animate-scaleIn">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-2xl bg-emerald-600 text-white shadow-md shadow-emerald-200">
+                  <Tags className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base sm:text-lg font-extrabold text-slate-900">
+                      รวบรวมหัวเรื่อง (Tag 650) และเลขหมู่ DDC (Tag 082 $a) ในระบบทั้งหมด
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-[11px] font-bold text-emerald-800 border border-emerald-200">
+                      Tag 650 $a ⟷ Tag 082 $a
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    ความสัมพันธ์ระหว่างหัวเรื่อง (Subject Headings) กับเลขหมู่หนังสือ DDC ในระบบ เพื่อความสะดวกและเป็นมาตรฐานในการกำหนดหมวดหมู่
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsSubjectHeadingsModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Search & Category Filter Bar */}
+            <div className="space-y-3 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
+              <div className="relative">
+                <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={subjectSearchTerm}
+                  onChange={(e) => setSubjectSearchTerm(e.target.value)}
+                  placeholder="ค้นหาชื่อหัวเรื่อง หรือเลขหมู่ DDC (เช่น จิตวิทยา, การเงิน, 158.1, 895.913, ด, ย)..."
+                  className="w-full pl-9 pr-8 py-2.5 bg-white border border-slate-200 rounded-xl text-xs sm:text-sm focus:ring-2 focus:ring-emerald-500 font-medium text-slate-800 shadow-xs"
+                />
+                {subjectSearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSubjectSearchTerm('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Filter Pills */}
+              <div className="flex items-center gap-1.5 flex-wrap overflow-x-auto pb-0.5">
+                {[
+                  { id: 'all', label: `ทั้งหมด (${allSystemSubjects.length})` },
+                  { id: '1', label: '100 ปรัชญา/จิตวิทยา' },
+                  { id: '3', label: '300 สังคม/การเงิน' },
+                  { id: '6', label: '600 เทคโนโลยี/ธุรกิจ' },
+                  { id: '8', label: '800 วรรณกรรม' },
+                  { id: '9', label: '900 ประวัติศาสตร์' },
+                  { id: 'children', label: 'ด/ย เด็กและเยาวชน' },
+                  { id: '0', label: '000 คอมพิวเตอร์' },
+                  { id: '5', label: '500 วิทยาศาสตร์' },
+                  { id: '7', label: '700 ศิลปะ' },
+                  { id: '2', label: '200 ศาสนา' },
+                  { id: '4', label: '400 ภาษา' }
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSubjectCategoryFilter(tab.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${
+                      subjectCategoryFilter === tab.id
+                        ? 'bg-emerald-600 text-white shadow-sm'
+                        : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Subtitle / summary info */}
+            <div className="flex items-center justify-between px-1 text-xs text-slate-500">
+              <span className="font-medium">
+                แสดง <strong className="text-slate-900 font-bold">{filteredSystemSubjects.length}</strong> รายการ (เรียงตามลำดับตัวอักษร ก-ฮ, A-Z)
+              </span>
+              {isLoadingDbSubjects && (
+                <span className="text-emerald-600 font-medium animate-pulse flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> กำลังซิงค์ข้อมูลหัวเรื่องและเลขหมู่จากระบบ...
+                </span>
+              )}
+            </div>
+
+            {/* 2-Column Subject & DDC Table (Exact matching Author Cutter layout) */}
+            <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-sm max-h-[52vh] overflow-y-auto bg-white">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-100/90 border-b border-slate-200 text-slate-700 sticky top-0 z-10 font-bold uppercase tracking-wider text-[11px]">
+                  <tr>
+                    <th className="py-3 px-4 w-7/12">
+                      หัวเรื่อง (จาก Tag 650 $a และหัวเรื่องในระบบ)
+                    </th>
+                    <th className="py-3 px-4 w-5/12 text-right">
+                      เลขหมู่หนังสือ DDC (Tag 082 $a)
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white">
+                  {filteredSystemSubjects.length === 0 ? (
+                    <tr>
+                      <td colSpan={2} className="py-10 text-center text-slate-400">
+                        <p className="font-bold text-sm text-slate-600">ไม่พบข้อมูลหัวเรื่องที่ตรงกับคำค้นหา "{subjectSearchTerm}"</p>
+                        <p className="text-xs text-slate-400 mt-1">สามารถเปลี่ยนคำค้นหา หรือเลือกหมวดหมู่อื่นจากปุ่มตัวกรองด้านบน</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredSystemSubjects.map((item, idx) => (
+                      <tr key={`sys_subj_${item.id}_${idx}`} className="hover:bg-emerald-50/40 transition group">
+                        <td className="py-3 px-4">
+                          <div className="flex items-start gap-2.5">
+                            <span className="p-2 rounded-xl flex-shrink-0 bg-emerald-100 text-emerald-700 mt-0.5">
+                              <Tag className="w-4 h-4" />
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-slate-900 text-sm block">
+                                  {item.subject}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => copyToClipboard(item.subject, `หัวเรื่อง "${item.subject}"`)}
+                                  title="คัดลอกชื่อหัวเรื่องนี้"
+                                  className="p-1 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition border border-transparent hover:border-emerald-200 cursor-pointer opacity-70 group-hover:opacity-100"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                  Tag 650 $a
+                                </span>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                                  {item.category}
+                                </span>
+                                {item.bookCount > 0 && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-sky-50 text-sky-800 border border-sky-200">
+                                    {item.bookCount.toLocaleString()} เล่มในระบบ
+                                  </span>
+                                )}
+                                {item.source && (
+                                  <span className="text-[10px] text-slate-400 font-normal">
+                                    • {item.source}
+                                  </span>
+                                )}
+                              </div>
+                              {item.sampleTitles.length > 0 && (
+                                <p className="text-[11px] text-slate-500 mt-1 line-clamp-1">
+                                  <span className="font-semibold text-slate-600">ตัวอย่างหนังสือ:</span> {item.sampleTitles.join(', ')}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-2 flex-wrap">
+                            <span className="font-mono font-bold text-sm text-emerald-800 bg-emerald-50 px-3.5 py-1.5 rounded-xl border border-emerald-300 shadow-xs">
+                              {item.primaryDdc || '-'}
+                            </span>
+                            {item.allDdcs.length > 1 && (
+                              <div className="hidden sm:flex flex-wrap items-center justify-end gap-1" title="เลขหมู่อื่นๆ ที่มีการจัดเก็บในระบบสำหรับหัวเรื่องนี้">
+                                {item.allDdcs.slice(1, 3).map((d, i) => (
+                                  <span key={i} className="font-mono text-[11px] text-slate-600 bg-slate-100 px-2 py-0.5 rounded-lg border border-slate-200">
+                                    {d.ddc} ({d.count})
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                            {item.primaryDdc && item.primaryDdc !== '-' && (
+                              <button
+                                type="button"
+                                onClick={() => copyToClipboard(item.primaryDdc, `เลขหมู่ DDC ${item.primaryDdc}`)}
+                                title="คัดลอกเลขหมู่ DDC"
+                                className="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition border border-transparent hover:border-emerald-200 cursor-pointer"
+                              >
+                                <Copy className="w-4 h-4" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSearchQuery(item.subject);
+                                setIsSubjectHeadingsModalOpen(false);
+                                showToast(`🔍 กรองตารางด้วยหัวเรื่อง "${item.subject}" เรียบร้อยแล้ว`);
+                              }}
+                              title="ค้นหาหนังสือในตารางที่ใช้หัวเรื่องนี้"
+                              className="px-2.5 py-1.5 text-xs text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg font-medium transition cursor-pointer flex items-center gap-1 shrink-0"
+                            >
+                              <Search className="w-3 h-3" />
+                              <span>กรองในตาราง</span>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+              <span className="text-xs text-slate-500">
+                รวมหัวเรื่องทั้งหมดในระบบ: <strong className="text-emerald-700 font-bold">{allSystemSubjects.length}</strong> รายการ
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsSubjectHeadingsModalOpen(false)}
+                className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer"
+              >
+                ปิดหน้าต่างรวบรวมหัวเรื่อง
               </button>
             </div>
           </div>
