@@ -175,8 +175,16 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- ปิด RLS เพื่อให้อ่าน/เขียนจากหน้าเว็บได้โดยตรง
+-- ปิด RLS และสร้าง Policy อนุญาตให้อ่าน/เขียนได้โดยตรง 100%
 ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
 
 -- ตั้งค่า Replica Identity เป็น FULL เพื่อให้ Realtime ส่งข้อมูลการแก้ไขและลบครบถ้วนทุกคอลัมน์
 ALTER TABLE marc21_records REPLICA IDENTITY FULL;

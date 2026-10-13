@@ -45,6 +45,7 @@ import {
 import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
 import { supabase } from '../../supabaseClient';
+import { saveRecordsToIndexedDb, loadRecordsFromIndexedDb } from '../utils/marcIndexedDb';
 
 export const calculateThaiCutter = generateThaiCutter;
 
@@ -1011,9 +1012,21 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const [isCloudRealtimeConnected, setIsCloudRealtimeConnected] = useState(false);
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [hasCloudTable, setHasCloudTable] = useState<boolean | null>(null);
+  const [hasRlsError, setHasRlsError] = useState(false);
+  const [cloudSqlTab, setCloudSqlTab] = useState<'rls' | 'all'>('rls');
   const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
   const [isCloudSetupModalOpen, setIsCloudSetupModalOpen] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
+  const [copiedRlsSql, setCopiedRlsSql] = useState(false);
+
+  // Cloud Database Books Import Modal States (Pull existing books from database)
+  const [isImportBooksModalOpen, setIsImportBooksModalOpen] = useState(false);
+  const [importAccStart, setImportAccStart] = useState('0000002984');
+  const [importAccEnd, setImportAccEnd] = useState('0000003040');
+  const [importMode, setImportMode] = useState<'range' | 'recent' | 'all'>('range');
+  const [importRecentLimit, setImportRecentLimit] = useState(50);
+  const [importAppendMode, setImportAppendMode] = useState<'replace' | 'append'>('replace');
+  const [isImportingFromDb, setIsImportingFromDb] = useState(false);
 
   // Dedicated UC-TAL ThaiLIS (https://uc.thailis.or.th) Box Search States
   const [uctalKeyword, setUctalKeyword] = useState('');
@@ -1527,6 +1540,149 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     };
   };
 
+  // Convert Supabase 'books' row into full Marc21Record with all 29 columns and generated MARC tags
+  const bookRowToMarcRecord = (b: any): Marc21Record => {
+    const rawAcc = b.accession_no || b.barcode || '';
+    const cleanAcc = String(rawAcc).trim();
+    const cleanTitle = (b.title || '').trim();
+    const cleanAuthor = (b.author || '').trim();
+    const cleanIsbn = (b.isbn || '').trim();
+    const ddc = (b.ddc || '').trim();
+
+    // Determine cutter
+    let cutter = '';
+    if (b.call_number && b.call_number.includes(' ')) {
+      cutter = b.call_number.split(' ').slice(1).join(' ').trim();
+    } else if (cleanAuthor) {
+      try {
+        cutter = generateThaiCutter(cleanAuthor, cleanTitle);
+      } catch {
+        cutter = '';
+      }
+    }
+
+    const rec: Marc21Record = {
+      id: b.id || `book_${cleanAcc || Date.now()}`,
+      db_id: b.id,
+      date: b.created_at ? new Date(b.created_at).toLocaleDateString('th-TH') : new Date().toLocaleDateString('th-TH'),
+      col1: '',
+      accession_no: cleanAcc,
+      isbn: cleanIsbn,
+      author_personal: cleanAuthor || '-',
+      author_corporate: '-',
+      title_245a: cleanTitle,
+      title_245b: (b.subtitle || '').trim(),
+      responsibility_245c: cleanAuthor || '',
+      ddc_082a: ddc,
+      cutter_082b: cutter,
+      pub_place: b.publication_place || 'กรุงเทพฯ',
+      publisher: (b.publisher || '').trim(),
+      pub_year: (b.publication_year || '').trim(),
+      pages_300a: (b.pages || '').trim(),
+      illustration_300b: (b.illustration && !b.illustration.startsWith('http')) ? b.illustration : 'ภาพประกอบ',
+      dimensions_300c: '21 ซม.',
+      subject_650a: (b.subject || '').trim(),
+      copies: '1',
+      summary_520: (b.description || '').trim(),
+      edition_250: b.edition || 'พิมพ์ครั้งที่ 1',
+      price_541: b.price || '-',
+      series_490: b.series || '-',
+      added_entry_700: (b.co_authors && b.co_authors !== 'ผู้แปล: -') ? b.co_authors : '-',
+      acquisition_source: 'สั่งซื้อ',
+      col2: '',
+      source_type: b.source || 'ฐานข้อมูลระบบห้องสมุด',
+      storage_location: b.category || (ddc ? `หมวด ${ddc.charAt(0)}00` : 'ทั่วไป'),
+      status: b.status || 'พร้อมให้บริการ',
+      col3: '',
+      cover_image: b.cover_image || '',
+      search_source: b.source || 'ฐานข้อมูลระบบห้องสมุด (Cloud Books)'
+    };
+
+    rec.marc_tags = generateMarcTagsFromRecord(rec);
+    return rec;
+  };
+
+  // Import books from Supabase 'books' table into MARC 21 table
+  const handleImportBooksFromDb = async (customStart?: string, customEnd?: string) => {
+    setIsImportingFromDb(true);
+    setStatusMessage('กำลังดึงข้อมูลหนังสือจากระบบห้องสมุด...');
+    try {
+      let query = supabase.from('books').select('*');
+
+      const start = customStart !== undefined ? customStart : importAccStart;
+      const end = customEnd !== undefined ? customEnd : importAccEnd;
+
+      if (customStart !== undefined || importMode === 'range') {
+        const cleanStart = (start || '').trim();
+        const cleanEnd = (end || '').trim();
+        if (cleanStart) {
+          const paddedStart = !isNaN(parseInt(cleanStart, 10)) ? String(parseInt(cleanStart, 10)).padStart(10, '0') : cleanStart;
+          query = query.gte('accession_no', paddedStart);
+        }
+        if (cleanEnd) {
+          const paddedEnd = !isNaN(parseInt(cleanEnd, 10)) ? String(parseInt(cleanEnd, 10)).padStart(10, '0') : cleanEnd;
+          query = query.lte('accession_no', paddedEnd);
+        }
+        query = query.order('accession_no', { ascending: true });
+      } else if (importMode === 'recent') {
+        query = query.order('accession_no', { ascending: false }).limit(importRecentLimit);
+      } else {
+        query = query.order('accession_no', { ascending: true });
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        showToast('⚠️ ไม่พบข้อมูลหนังสือตามเงื่อนไขเลขทะเบียนที่ระบุ');
+        return;
+      }
+
+      let sortedData = data;
+      if (importMode === 'recent' && customStart === undefined) {
+        sortedData = [...data].reverse();
+      }
+
+      const importedRecords: Marc21Record[] = sortedData.map(bookRowToMarcRecord);
+
+      if (importAppendMode === 'append' && customStart === undefined) {
+        setRecords(prev => {
+          const existingIds = new Set(prev.map(r => r.id));
+          const newItems = importedRecords.filter(r => !existingIds.has(r.id));
+          const combined = [...prev, ...newItems];
+          try {
+            localStorage.setItem('iabs_marc21_records', JSON.stringify(combined));
+          } catch {}
+          return combined;
+        });
+      } else {
+        setRecords(importedRecords);
+        try {
+          localStorage.setItem('iabs_marc21_records', JSON.stringify(importedRecords));
+        } catch {}
+      }
+
+      // Update start accession number to next available number
+      const maxAcc = importedRecords.reduce((max, r) => {
+        const num = parseInt(r.accession_no, 10);
+        return !isNaN(num) && num > max ? num : max;
+      }, 2612);
+      setStartAccNum(Math.max(maxAcc + 1, 2613));
+
+      // Also backup/sync to cloud table marc21_records if available
+      syncBatchToCloud(importedRecords);
+
+      setIsImportBooksModalOpen(false);
+      showToast(`📥 ดึงข้อมูลหนังสือ ${importedRecords.length} เล่ม เข้าสู่ตาราง MARC 21 เรียบร้อยแล้ว!`);
+    } catch (err: any) {
+      console.error('Import books error:', err);
+      showToast(`⚠️ เกิดข้อผิดพลาดในการดึงข้อมูล: ${err.message || err}`);
+    } finally {
+      setIsImportingFromDb(false);
+      setStatusMessage('');
+    }
+  };
+
   // Sync single record to Supabase Cloud
   const syncRecordToCloud = async (rec: Marc21Record) => {
     try {
@@ -1534,8 +1690,11 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       const { error } = await supabase.from('marc21_records').upsert(payload, { onConflict: 'id' });
       if (!error) {
         setHasCloudTable(true);
+        setHasRlsError(false);
       } else if (error.code === '42P01') {
         setHasCloudTable(false);
+      } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+        setHasRlsError(true);
       }
     } catch {}
   };
@@ -1548,12 +1707,19 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       for (let i = 0; i < payloads.length; i += 50) {
         const chunk = payloads.slice(i, i + 50);
         const { error } = await supabase.from('marc21_records').upsert(chunk, { onConflict: 'id' });
-        if (error && error.code === '42P01') {
-          setHasCloudTable(false);
-          return;
+        if (error) {
+          if (error.code === '42P01') {
+            setHasCloudTable(false);
+            return;
+          }
+          if (error.code === '42501' || error.message?.includes('row-level security')) {
+            setHasRlsError(true);
+            return;
+          }
         }
       }
       setHasCloudTable(true);
+      setHasRlsError(false);
     } catch {}
   };
 
@@ -1579,66 +1745,140 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     } catch {}
   };
 
-  // 1. Initial Load: Load from localStorage first (zero latency), then load latest from Supabase Cloud
-  useEffect(() => {
-    let isMounted = true;
+  // Helper to load ALL records from Supabase Cloud with full pagination (bypasses 1,000 row PostgREST limit)
+  const loadCloudRecords = async () => {
+    setIsSyncingCloud(true);
+    setStatusMessage('กำลังเชื่อมต่อและโหลดข้อมูลหนังสือจาก Supabase Cloud (ตั้งแต่ 0000000001 ถึงเล่มล่าสุด)...');
     try {
-      const saved = localStorage.getItem('iabs_marc21_records');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setRecords(parsed);
-          const maxAcc = parsed.reduce((max, r) => {
-            const num = parseInt(r.accession_no, 10);
-            return !isNaN(num) && num > max ? num : max;
-          }, 2612);
-          setStartAccNum(Math.max(maxAcc + 1, 2613));
-        }
-      }
-    } catch {}
+      let allData: any[] = [];
+      let page = 0;
+      const pageSize = 1000;
+      let hasMore = true;
 
-    const loadCloudRecords = async () => {
-      setIsSyncingCloud(true);
-      try {
+      while (hasMore) {
+        const from = page * pageSize;
+        const to = from + pageSize - 1;
         const { data, error } = await supabase
           .from('marc21_records')
           .select('*')
-          .order('accession_no', { ascending: true });
+          .order('accession_no', { ascending: true })
+          .range(from, to);
 
-        if (!isMounted) return;
-
-        if (!error && data) {
-          setHasCloudTable(true);
-          if (data.length > 0) {
-            const formatted: Marc21Record[] = data.map((d: any) => ({
-              ...d,
-              marc_tags: Array.isArray(d.marc_tags)
-                ? d.marc_tags
-                : (typeof d.marc_tags === 'string' ? JSON.parse(d.marc_tags) : [])
-            }));
-            setRecords(formatted);
-            try {
-              localStorage.setItem('iabs_marc21_records', JSON.stringify(formatted));
-            } catch {}
-            const maxAcc = formatted.reduce((max, r) => {
-              const num = parseInt(r.accession_no, 10);
-              return !isNaN(num) && num > max ? num : max;
-            }, 2612);
-            setStartAccNum(Math.max(maxAcc + 1, 2613));
-            setLastCloudSyncTime(new Date().toLocaleTimeString('th-TH'));
-          }
-        } else if (error) {
+        if (error) {
           if (error.code === '42P01') {
             setHasCloudTable(false);
+          } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+            setHasRlsError(true);
+            setCloudSqlTab('rls');
           }
+          break;
         }
-      } catch (err) {
-        console.warn('[Cloud Load Note]:', err);
-      } finally {
-        if (isMounted) setIsSyncingCloud(false);
-      }
-    };
 
+        if (data && data.length > 0) {
+          allData = allData.concat(data);
+
+          // Progressive rendering so user sees records immediately while remaining pages load
+          const formattedCurrent: Marc21Record[] = allData.map((d: any) => ({
+            ...d,
+            marc_tags: Array.isArray(d.marc_tags)
+              ? d.marc_tags
+              : (typeof d.marc_tags === 'string' ? JSON.parse(d.marc_tags) : [])
+          }));
+
+          setRecords(formattedCurrent);
+          setHasCloudTable(true);
+          setHasRlsError(false);
+
+          if (data.length < pageSize) {
+            hasMore = false;
+          } else {
+            page++;
+          }
+        } else {
+          hasMore = false;
+        }
+      }
+
+      if (allData.length > 0) {
+        setHasCloudTable(true);
+        setHasRlsError(false);
+        const finalFormatted: Marc21Record[] = allData.map((d: any) => ({
+          ...d,
+          marc_tags: Array.isArray(d.marc_tags)
+            ? d.marc_tags
+            : (typeof d.marc_tags === 'string' ? JSON.parse(d.marc_tags) : [])
+        }));
+
+        setRecords(finalFormatted);
+        saveRecordsToIndexedDb(finalFormatted);
+
+        const maxAcc = finalFormatted.reduce((max, r) => {
+          const num = parseInt(r.accession_no, 10);
+          return !isNaN(num) && num > max ? num : max;
+        }, 2612);
+        setStartAccNum(Math.max(maxAcc + 1, 2613));
+
+        const firstAcc = finalFormatted[0]?.accession_no || '0000000001';
+        const lastAcc = finalFormatted[finalFormatted.length - 1]?.accession_no || '0000003041';
+        setLastCloudSyncTime(`${new Date().toLocaleTimeString('th-TH')} (${finalFormatted.length.toLocaleString()} รายการ: ${firstAcc} - ${lastAcc})`);
+
+        // Probe write permissions to detect Supabase Row-Level Security (RLS) status
+        try {
+          const probeId = 'test_probe_rls_check';
+          const { error: probeError } = await supabase
+            .from('marc21_records')
+            .upsert({ id: probeId, title_245a: 'PROBE_CHECK' }, { onConflict: 'id' });
+
+          if (probeError && (probeError.code === '42501' || probeError.message?.includes('row-level security'))) {
+            setHasRlsError(true);
+            setCloudSqlTab('rls');
+          } else if (!probeError) {
+            setHasRlsError(false);
+            await supabase.from('marc21_records').delete().eq('id', probeId);
+          }
+        } catch {}
+      }
+    } catch (err) {
+      console.warn('[Cloud Load Note]:', err);
+    } finally {
+      setIsSyncingCloud(false);
+      setStatusMessage('');
+    }
+  };
+
+  // 1. Initial Load: Load from IndexedDB/localStorage first (instant), then immediately fetch all from Supabase Cloud
+  useEffect(() => {
+    let isMounted = true;
+
+    // Check IndexedDB cache first for instant high-capacity loading
+    loadRecordsFromIndexedDb().then((cached) => {
+      if (isMounted && cached && cached.length > 0) {
+        setRecords(cached);
+        const maxAcc = cached.reduce((max, r) => {
+          const num = parseInt(r.accession_no, 10);
+          return !isNaN(num) && num > max ? num : max;
+        }, 2612);
+        setStartAccNum(Math.max(maxAcc + 1, 2613));
+      } else {
+        // Fallback to localStorage if any
+        try {
+          const saved = localStorage.getItem('iabs_marc21_records');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (isMounted && Array.isArray(parsed) && parsed.length > 0) {
+              setRecords(parsed);
+              const maxAcc = parsed.reduce((max, r) => {
+                const num = parseInt(r.accession_no, 10);
+                return !isNaN(num) && num > max ? num : max;
+              }, 2612);
+              setStartAccNum(Math.max(maxAcc + 1, 2613));
+            }
+          }
+        } catch {}
+      }
+    });
+
+    // Automatically load all records from Supabase Cloud on component mount
     loadCloudRecords();
 
     return () => {
@@ -1716,18 +1956,24 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     };
   }, []);
 
-  // 3. Save records to localStorage whenever they change
+  // 3. Save records to IndexedDB and update start accession number whenever they change
   useEffect(() => {
-    try {
-      localStorage.setItem('iabs_marc21_records', JSON.stringify(records));
-      if (records.length > 0) {
-        const maxAcc = records.reduce((max, r) => {
-          const num = parseInt(r.accession_no, 10);
-          return !isNaN(num) && num > max ? num : max;
-        }, 2612);
-        setStartAccNum(Math.max(maxAcc + 1, 2613));
-      }
-    } catch {}
+    if (records.length > 0) {
+      saveRecordsToIndexedDb(records);
+
+      const maxAcc = records.reduce((max, r) => {
+        const num = parseInt(r.accession_no, 10);
+        return !isNaN(num) && num > max ? num : max;
+      }, 2612);
+      setStartAccNum(Math.max(maxAcc + 1, 2613));
+
+      // Attempt lightweight localStorage save only if small enough (< 300 records) to avoid QuotaExceededError
+      try {
+        if (records.length <= 300) {
+          localStorage.setItem('iabs_marc21_records', JSON.stringify(records));
+        }
+      } catch {}
+    }
   }, [records]);
 
   // Sync entire current table to Supabase Cloud
@@ -1745,19 +1991,35 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         if (error) {
           if (error.code === '42P01') {
             setHasCloudTable(false);
+            setCloudSqlTab('all');
             setIsCloudSetupModalOpen(true);
             showToast('⚠️ ยังไม่ได้สร้างตาราง marc21_records ใน Supabase กรุณารัน SQL ตามขั้นตอน');
+            return;
+          }
+          if (error.code === '42501' || error.message?.includes('row-level security')) {
+            setHasRlsError(true);
+            setCloudSqlTab('rls');
+            setIsCloudSetupModalOpen(true);
+            showToast('⚠️ ติดสิทธิ์ Row-Level Security (RLS) บน Supabase กรุณารันคำสั่งปลดล็อค RLS ในหน้าต่างที่เปิดขึ้นมา');
             return;
           }
           throw error;
         }
       }
       setHasCloudTable(true);
+      setHasRlsError(false);
       setLastCloudSyncTime(new Date().toLocaleTimeString('th-TH'));
       showToast(`☁️ ซิงค์ข้อมูลทั้งหมด ${records.length} รายการขึ้น Supabase Cloud สำเร็จ! ทุกอุปกรณ์จะเห็นตรงกันทันที`);
     } catch (err: any) {
       console.error('Cloud Sync Error:', err);
-      showToast(`❌ ซิงค์ไม่สำเร็จ: ${err.message || 'โปรดตรวจสอบการเชื่อมต่อ'}`);
+      if (err?.code === '42501' || err?.message?.includes('row-level security')) {
+        setHasRlsError(true);
+        setCloudSqlTab('rls');
+        setIsCloudSetupModalOpen(true);
+        showToast('⚠️ ติดสิทธิ์ Row-Level Security (RLS) บน Supabase กรุณารันคำสั่งปลดล็อค RLS ในหน้าต่างที่เปิดขึ้นมา');
+      } else {
+        showToast(`❌ ซิงค์ไม่สำเร็จ: ${err.message || 'โปรดตรวจสอบการเชื่อมต่อ'}`);
+      }
     } finally {
       setIsSyncingCloud(false);
     }
@@ -2570,13 +2832,34 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     );
   };
 
-  // Table Pagination States (Default 50 items/rows per page as requested)
+  // Table Pagination & Quick Search States
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
   const [jumpInputPage, setJumpInputPage] = useState<string>('1');
+  const [tableSearchTerm, setTableSearchTerm] = useState<string>('');
   const tableContainerRef = useRef<HTMLDivElement | null>(null);
 
-  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+  // Filter records based on table search query (Accession No, title, author, isbn, cutter, etc.)
+  const filteredRecords = React.useMemo(() => {
+    if (!tableSearchTerm.trim()) return records;
+    const q = tableSearchTerm.trim().toLowerCase();
+    return records.filter(r => {
+      return (
+        (r.accession_no && r.accession_no.toLowerCase().includes(q)) ||
+        (r.title_245a && r.title_245a.toLowerCase().includes(q)) ||
+        (r.title_245b && r.title_245b.toLowerCase().includes(q)) ||
+        (r.author_personal && r.author_personal.toLowerCase().includes(q)) ||
+        (r.author_corporate && r.author_corporate.toLowerCase().includes(q)) ||
+        (r.isbn && r.isbn.toLowerCase().includes(q)) ||
+        (r.ddc_082a && r.ddc_082a.toLowerCase().includes(q)) ||
+        (r.cutter_082b && r.cutter_082b.toLowerCase().includes(q)) ||
+        (r.publisher && r.publisher.toLowerCase().includes(q)) ||
+        (r.pub_year && r.pub_year.toLowerCase().includes(q))
+      );
+    });
+  }, [records, tableSearchTerm]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
 
   // Sync jump input and clamp page
   useEffect(() => {
@@ -2584,19 +2867,19 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   }, [currentPage]);
 
   useEffect(() => {
-    const maxP = Math.max(1, Math.ceil(records.length / pageSize));
+    const maxP = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
     if (currentPage > maxP) {
       setCurrentPage(maxP);
     } else if (currentPage < 1) {
       setCurrentPage(1);
     }
-  }, [records.length, pageSize, currentPage]);
+  }, [filteredRecords.length, pageSize, currentPage]);
 
   const startIndex = (currentPage - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, records.length);
+  const endIndex = Math.min(startIndex + pageSize, filteredRecords.length);
   const paginatedRecords = React.useMemo(() => {
-    return records.slice(startIndex, endIndex);
-  }, [records, startIndex, endIndex]);
+    return filteredRecords.slice(startIndex, endIndex);
+  }, [filteredRecords, startIndex, endIndex]);
 
   const isAllCurrentPageSelected = React.useMemo(() => {
     return paginatedRecords.length > 0 && paginatedRecords.every(r => selectedIds.has(r.id));
@@ -3237,6 +3520,14 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
               <span>ตารางเลขคัตเตอร์ (TK, จุฬา, มอ.)</span>
             </button>
             <button
+              onClick={() => setIsImportBooksModalOpen(true)}
+              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2 shadow-lg shadow-indigo-950/20 cursor-pointer"
+              title="ดึงข้อมูลหนังสือที่เคยลงไว้จากเครื่องอื่น (เช่น เลขทะเบียน 0000002984 ถึง 0000003040) เข้ามาแสดงในตารางทำงาน MARC 21"
+            >
+              <Download className="w-4 h-4 text-sky-200" />
+              <span>ดึงข้อมูลจากระบบ (0000002984 - ล่าสุด)</span>
+            </button>
+            <button
               onClick={() => setIsBatchOpen(true)}
               className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-white/20 transition flex items-center gap-2 shadow-sm cursor-pointer"
             >
@@ -3542,7 +3833,12 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
           <div>
             <div className="font-bold text-slate-800 text-xs sm:text-sm flex flex-wrap items-center gap-2">
               <span>การเชื่อมต่อข้ามอุปกรณ์ & Real-time Sync</span>
-              {isCloudRealtimeConnected ? (
+              {hasRlsError ? (
+                <span className="text-[10px] bg-rose-100 text-rose-800 border border-rose-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1.5 shadow-xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
+                  🔴 ติดสิทธิ์ RLS บน Supabase (กดปลดล็อค 1 คลิก)
+                </span>
+              ) : isCloudRealtimeConnected ? (
                 <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1.5 shadow-xs">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
                   🟢 เชื่อมต่อ Cloud Realtime แล้ว (ซิงค์ทุกเครื่องทันที)
@@ -3559,7 +3855,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
               )}
             </div>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              {isCloudRealtimeConnected
+              {hasRlsError
+                ? 'ตาราง marc21_records มีอยู่แล้ว แต่ติดสิทธิ์ Row Level Security (RLS) ทำให้ไม่สามารถบันทึกข้อมูลได้ กรุณากดปุ่ม "วิธีตั้งค่า SQL" เพื่อคัดลอกคำสั่งปลดล็อค'
+                : isCloudRealtimeConnected
                 ? `ทุกเครื่อง (คอมที่ 1, คอมที่ 2, มือถือ) จะเห็นข้อมูลอัปเดตตรงกันทันทีแบบ Real-time โดยไม่ต้องรีเฟรชหน้าจอ ${lastCloudSyncTime ? `(อัปเดตล่าสุด: ${lastCloudSyncTime})` : ''}`
                 : 'หากต้องการให้คอม 1 และคอม 2 เห็นข้อมูลตรงกันทันทีแบบไม่ต้องรีเฟรชหน้าจอ คลิกปุ่ม "วิธีตั้งค่า SQL" ด้านขวา'}
             </p>
@@ -3567,6 +3865,17 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => loadCloudRecords()}
+            disabled={isSyncingCloud}
+            className="px-3.5 py-2 bg-white hover:bg-slate-100 border border-indigo-200 text-slate-700 font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
+            title="ดึงข้อมูลทั้งหมดที่มีอยู่ในตาราง marc21_records บน Supabase Cloud (0000000001 - เล่มล่าสุด)"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-indigo-600 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+            <span>{isSyncingCloud ? 'กำลังโหลดข้อมูล...' : 'รีเฟรชจาก Cloud'}</span>
+          </button>
+
           <button
             type="button"
             onClick={handleSyncAllToCloud}
@@ -3580,12 +3889,19 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
           <button
             type="button"
-            onClick={() => setIsCloudSetupModalOpen(true)}
-            className="px-3.5 py-2 bg-white border border-indigo-300 hover:bg-indigo-50 text-indigo-700 font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
+            onClick={() => {
+              if (hasRlsError) setCloudSqlTab('rls');
+              setIsCloudSetupModalOpen(true);
+            }}
+            className={`px-3.5 py-2 border font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs ${
+              hasRlsError
+                ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-600 animate-pulse'
+                : 'bg-white border-indigo-300 hover:bg-indigo-50 text-indigo-700'
+            }`}
             title="คลิกเพื่อดูวิธีตั้งค่า SQL บน Supabase ให้แสดงผลทุกอุปกรณ์แบบ Real-time"
           >
-            <Code className="w-3.5 h-3.5 text-indigo-600" />
-            <span>วิธีตั้งค่า SQL (ซิงค์ทุกเครื่อง)</span>
+            {hasRlsError ? <AlertTriangle className="w-3.5 h-3.5" /> : <Code className="w-3.5 h-3.5 text-indigo-600" />}
+            <span>{hasRlsError ? 'ปลดล็อคสิทธิ์ RLS (ด่วน)' : 'วิธีตั้งค่า SQL (ซิงค์ทุกเครื่อง)'}</span>
           </button>
         </div>
       </div>
@@ -3650,17 +3966,24 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
           <button
             type="button"
-            onClick={() => {
-              const parsed = parseInt(inputStartAcc, 10);
-              const base = !isNaN(parsed) && parsed >= 1 ? parsed : startAccNum;
-              handleAutoRenumber(base);
-            }}
+            onClick={() => handleAutoRenumber()}
             disabled={records.length === 0}
             className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5"
             title="จัดเรียงเลขทะเบียนหนังสือทุกแถวในตารางใหม่ตามลำดับเลขเริ่มต้น"
           >
             <RefreshCw className="w-3.5 h-3.5" />
             <span>เรียงเลขทะเบียนตารางใหม่ ({records.length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleImportBooksFromDb('0000002984', '0000003040')}
+            disabled={isImportingFromDb}
+            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
+            title="ดึงข้อมูลหนังสือช่วงเลขทะเบียน 0000002984 - 0000003040 จากฐานข้อมูลห้องสมุดมาลงตารางทันที"
+          >
+            <Database className="w-3.5 h-3.5 text-indigo-200" />
+            <span>{isImportingFromDb ? 'กำลังดึง...' : 'ดึงช่วง 0000002984 - 0000003040'}</span>
           </button>
         </div>
       </div>
@@ -3720,6 +4043,44 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
           >
             <Trash2 className="w-4 h-4 text-white" />
           </button>
+
+          {/* Pull books from library button */}
+          <button
+            onClick={() => setIsImportBooksModalOpen(true)}
+            className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer ml-1"
+            title="ดึงข้อมูลหนังสือที่มีอยู่แล้วในระบบห้องสมุดเข้าตาราง MARC 21"
+          >
+            <Database className="w-3.5 h-3.5 text-indigo-600" />
+            <span>ดึงหนังสือจากระบบห้องสมุด</span>
+          </button>
+        </div>
+
+        {/* Quick Table Search & Filter input */}
+        <div className="relative min-w-[200px] max-w-xs flex-1">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={tableSearchTerm}
+            onChange={(e) => {
+              setTableSearchTerm(e.target.value);
+              setCurrentPage(1);
+            }}
+            placeholder="ค้นหาในตาราง (เช่น 3040, 2984, ชื่อเรื่อง, ISBN)..."
+            className="w-full pl-8 pr-7 py-1.5 bg-white border border-slate-300 rounded-lg text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
+          />
+          {tableSearchTerm && (
+            <button
+              type="button"
+              onClick={() => {
+                setTableSearchTerm('');
+                setCurrentPage(1);
+              }}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+              title="ล้างคำค้นหา"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         {/* Copy & Export buttons */}
@@ -3789,7 +4150,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-100/90 rounded-2xl border border-slate-200 text-xs text-slate-600">
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium text-slate-700">
-              แสดงรายการที่ <strong className="text-emerald-700 font-bold">{startIndex + 1} - {endIndex}</strong> จากทั้งหมด <strong className="text-slate-900 font-bold">{records.length.toLocaleString()}</strong> รายการ (หน้าละ {pageSize} รายการ)
+              แสดงรายการที่ <strong className="text-emerald-700 font-bold">{filteredRecords.length === 0 ? 0 : startIndex + 1} - {endIndex}</strong> จากทั้งหมด <strong className="text-slate-900 font-bold">{filteredRecords.length.toLocaleString()}</strong> รายการ {filteredRecords.length !== records.length ? `(กรองจากทั้งหมด ${records.length.toLocaleString()} รายการ)` : ''} (หน้าละ {pageSize} รายการ)
             </span>
             {selectedIds.size > 0 && (
               <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md border border-emerald-300">
@@ -3929,12 +4290,40 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
             <tbody className="divide-y divide-slate-200 bg-white">
               {records.length === 0 ? (
                 <tr>
-                  <td colSpan={MARC21_COLUMNS.length + 2} className="p-12 text-center text-slate-400">
+                  <td colSpan={MARC21_COLUMNS.length + 2} className="p-8 sm:p-12 text-center text-slate-400">
                     <FileSpreadsheet className="w-12 h-12 mx-auto mb-3 opacity-30 text-emerald-600" />
-                    <p className="text-sm font-semibold text-slate-600">ยังไม่มีข้อมูลรายการบรรณานุกรมในตาราง</p>
-                    <p className="text-xs text-slate-400 mt-1">
-                      พิมพ์ ISBN หรือชื่อหนังสือในกล่องค้นหาด้านบน หรือกดปุ่ม "รีเซ็ตตัวอย่าง" เพื่อดูตัวอย่างรายการ MARC 21
+                    <p className="text-sm font-semibold text-slate-700">ยังไม่มีข้อมูลรายการบรรณานุกรมในตาราง</p>
+                    <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+                      คุณสามารถสร้างรายการใหม่ หรือดึงข้อมูลหนังสือที่มีอยู่แล้วในระบบห้องสมุดเข้ามาแสดงในตารางได้ทันที
                     </p>
+
+                    <div className="mt-5 p-4 bg-emerald-50/90 border border-emerald-200 rounded-2xl max-w-lg mx-auto text-left space-y-2.5 shadow-xs">
+                      <div className="flex items-center gap-2 text-emerald-950 font-bold text-xs sm:text-sm">
+                        <Database className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>พบข้อมูลหนังสือในระบบห้องสมุดที่เคยลงไว้แล้ว (2,940 เล่ม)</span>
+                      </div>
+                      <p className="text-xs text-emerald-800 leading-relaxed">
+                        ต้องการดึงข้อมูลหนังสือช่วงเลขทะเบียน <strong>0000002984 ถึงล่าสุด 0000003040</strong> (58 เล่ม) ที่เคยนำเข้าจากเครื่องอื่นเข้ามาแสดงในตารางทำงานทันทีหรือไม่?
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => handleImportBooksFromDb('0000002984', '0000003040')}
+                          disabled={isImportingFromDb}
+                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>{isImportingFromDb ? 'กำลังดึงข้อมูล...' : 'ดึงช่วง 0000002984 - 0000003040 ทันที (58 เล่ม)'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsImportBooksModalOpen(true)}
+                          className="px-3.5 py-2 bg-white border border-emerald-300 hover:bg-emerald-100 text-emerald-800 font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1"
+                        >
+                          <span>เลือกช่วงอื่น...</span>
+                        </button>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               ) : (
@@ -4276,7 +4665,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                 'ไม่มีข้อมูลรายการในตาราง'
               ) : (
                 <>
-                  แสดงรายการที่ <strong className="text-emerald-700 font-bold">{startIndex + 1} - {endIndex}</strong> จากทั้งหมด <strong className="text-slate-900 font-bold">{records.length.toLocaleString()}</strong> รายการ ({MARC21_COLUMNS.length} คอลัมน์)
+                  แสดงรายการที่ <strong className="text-emerald-700 font-bold">{filteredRecords.length === 0 ? 0 : startIndex + 1} - {endIndex}</strong> จากทั้งหมด <strong className="text-slate-900 font-bold">{filteredRecords.length.toLocaleString()}</strong> รายการ {filteredRecords.length !== records.length ? `(จากทั้งหมด ${records.length.toLocaleString()} รายการ)` : ''} ({MARC21_COLUMNS.length} คอลัมน์)
                 </>
               )}
             </span>
@@ -6362,6 +6751,58 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
             {/* Modal Content */}
             <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto text-xs text-slate-600 leading-relaxed">
+              {/* RLS Error Urgent Alert Banner */}
+              {hasRlsError && (
+                <div className="p-4 bg-rose-50 border-2 border-rose-300 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                  <div className="space-y-1">
+                    <div className="font-extrabold text-rose-800 text-sm flex items-center gap-2">
+                      <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
+                      <span>พบสาเหตุ: ติดระบบความปลอดภัย Row-Level Security (RLS) บน Supabase</span>
+                    </div>
+                    <p className="text-xs text-rose-700 leading-relaxed">
+                      คุณมีตาราง <code className="font-mono font-bold bg-white px-1.5 py-0.5 rounded border border-rose-200 text-rose-950">marc21_records</code> เรียบร้อยแล้ว แต่ Supabase บล็อกสิทธิ์การเขียนข้อมูลจากหน้าเว็บ!
+                      <br />
+                      👉 <strong>วิธีแก้ใน 1 วินาที:</strong> เพียงกดปุ่ม <strong>"คัดลอกคำสั่งปลดล็อค RLS ทันที"</strong> ด้านขวา แล้วนำไปวางใน <strong>Supabase SQL Editor</strong> กด <strong>Run</strong> แค่ครั้งเดียว จะซิงค์ข้อมูลได้ทันทีทุกเครื่อง!
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const rlsOnlySql = `-- ปลดล็อค Row-Level Security (RLS) สำหรับตาราง marc21_records ให้บันทึกและแก้ไขข้อมูลได้ 100%
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
+
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;`;
+                      navigator.clipboard.writeText(rlsOnlySql);
+                      setCopiedRlsSql(true);
+                      showToast('📋 คัดลอกคำสั่งปลดล็อค RLS เรียบร้อยแล้ว! นำไปวางใน Supabase SQL Editor แล้วกด Run ได้เลย');
+                      setTimeout(() => setCopiedRlsSql(false), 3000);
+                    }}
+                    className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shrink-0 text-xs shadow-md"
+                  >
+                    {copiedRlsSql ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedRlsSql ? 'คัดลอกแล้ว!' : 'คัดลอกคำสั่งปลดล็อค RLS ทันที'}</span>
+                  </button>
+                </div>
+              )}
+
               {/* Status & Explanation Box */}
               <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-2xl space-y-2">
                 <div className="font-bold text-indigo-950 flex items-center gap-2 text-sm">
@@ -6369,10 +6810,10 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   <span>ทำไมต้องสร้างตารางใน SQL ใน Supabase?</span>
                 </div>
                 <p className="text-slate-700">
-                  ปัจจุบัน หากยังไม่ได้สร้างตารางใน Supabase ข้อมูลในตารางของหน้า <strong>สร้าง MARC 21 (MARC 21 AI)</strong> จะถูกเก็บไว้ใน <strong>LocalStorage (หน่วยความจำของบราวเซอร์ในเครื่องนั้นๆ)</strong> ทำให้คอมพิวเตอร์เครื่องที่ 2 หรืออุปกรณ์อื่นมองไม่เห็นข้อมูลที่ลงจากเครื่องที่ 1
+                  หากยังไม่ได้สร้างตารางหรือยังไม่ได้ปลดล็อค RLS ใน Supabase ข้อมูลในตารางของหน้า <strong>สร้าง MARC 21 (MARC 21 AI)</strong> จะถูกเก็บไว้ใน <strong>LocalStorage (หน่วยความจำของเครื่องนั้นๆ)</strong> ทำให้คอมพิวเตอร์เครื่องที่ 2 หรืออุปกรณ์อื่นมองไม่เห็นข้อมูลที่ลงจากเครื่องที่ 1
                 </p>
                 <p className="text-emerald-800 font-medium">
-                  💡 <strong>เมื่อสร้างตาราง <code className="bg-white px-1.5 py-0.5 rounded border border-emerald-300 font-mono text-emerald-950">marc21_records</code> และเปิด Supabase Realtime แล้ว:</strong> ทุกครั้งที่คอมที่ 1 มีการลงข้อมูล/แก้ไข/ลบ ระบบ Supabase จะส่งสัญญาณ WebSocket ไปอัปเดตหน้าจอของคอมที่ 2 ให้เห็นผลทันทีในเสี้ยววินาที <strong>โดยไม่ต้องกดรีเฟรชหน้าจอเลย!</strong>
+                  💡 <strong>เมื่อสร้างตารางและเปิด Supabase Realtime แล้ว:</strong> ทุกครั้งที่คอมที่ 1 มีการลงข้อมูล/แก้ไข/ลบ ระบบ Supabase จะส่งสัญญาณ WebSocket ไปอัปเดตหน้าจอของคอมที่ 2 ให้เห็นผลทันทีในเสี้ยววินาที <strong>โดยไม่ต้องกดรีเฟรชหน้าจอเลย!</strong>
                 </p>
               </div>
 
@@ -6399,22 +6840,83 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
                     <div className="font-bold text-indigo-700 text-xs">ขั้นตอนที่ 3</div>
                     <p className="text-slate-700">
-                      กดปุ่ม <strong>"คัดลอกคำสั่ง SQL ทั้งหมด"</strong> ด้านล่างนี้ นำไปวางในช่อง แล้วกดปุ่มเขียว <strong>"Run" (หรือกด Ctrl+Enter)</strong>
+                      กดปุ่ม <strong>"คัดลอกคำสั่ง SQL"</strong> ด้านล่าง นำไปวางในช่อง แล้วกดปุ่มเขียว <strong>"Run" (หรือกด Ctrl+Enter)</strong>
                     </p>
                   </div>
                 </div>
               </div>
 
-              {/* SQL Code Block with Copy Button */}
+              {/* Tab Selector: RLS Unlock vs Full SQL */}
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-slate-800 text-xs">
-                    คำสั่ง SQL สำหรับสร้างตาราง & เปิด Supabase Realtime:
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const sqlContent = `-- 1. สร้างตารางจัดเก็บข้อมูลตารางทำงาน MARC 21 AI
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCloudSqlTab('rls')}
+                      className={`px-3 py-1.5 font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                        cloudSqlTab === 'rls'
+                          ? 'bg-rose-600 text-white shadow-xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>1. คำสั่งปลดล็อค RLS (ด่วน สำหรับกรณีที่สร้างตารางแล้ว)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCloudSqlTab('all')}
+                      className={`px-3 py-1.5 font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                        cloudSqlTab === 'all'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Database className="w-3.5 h-3.5" />
+                      <span>2. คำสั่ง SQL ฉบับเต็ม (สร้างตารางใหม่ทั้งหมด)</span>
+                    </button>
+                  </div>
+
+                  {cloudSqlTab === 'rls' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rlsOnlySql = `-- ปลดล็อค Row-Level Security (RLS) สำหรับตาราง marc21_records ให้บันทึกและแก้ไขข้อมูลได้ 100%
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
+
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;`;
+                        navigator.clipboard.writeText(rlsOnlySql);
+                        setCopiedRlsSql(true);
+                        showToast('📋 คัดลอกคำสั่งปลดล็อค RLS เรียบร้อยแล้ว! นำไปวางใน Supabase SQL Editor ได้เลย');
+                        setTimeout(() => setCopiedRlsSql(false), 3000);
+                      }}
+                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-xs text-xs"
+                    >
+                      {copiedRlsSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedRlsSql ? 'คัดลอกเรียบร้อยแล้ว!' : 'คัดลอกคำสั่งปลดล็อค RLS'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const sqlContent = `-- 1. สร้างตารางจัดเก็บข้อมูลตารางทำงาน MARC 21 AI
 CREATE TABLE IF NOT EXISTS marc21_records (
   id TEXT PRIMARY KEY,
   db_id TEXT,
@@ -6478,8 +6980,16 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. ปิด RLS เพื่อให้อ่าน/เขียนจากหน้าเว็บได้โดยตรง
+-- 2. ปิด RLS และสร้าง Policy อนุญาตให้อ่าน/เขียนได้ 100%
 ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
 
 -- 3. ตั้งค่า Replica Identity เป็น FULL เพื่อให้ Realtime ส่งข้อมูลครบถ้วน
 ALTER TABLE marc21_records REPLICA IDENTITY FULL;
@@ -6500,29 +7010,45 @@ CREATE INDEX IF NOT EXISTS idx_marc21_accession ON marc21_records(accession_no);
 CREATE INDEX IF NOT EXISTS idx_marc21_isbn ON marc21_records(isbn);
 CREATE INDEX IF NOT EXISTS idx_marc21_title ON marc21_records(title_245a);
 CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DESC);`;
-                      navigator.clipboard.writeText(sqlContent);
-                      setCopiedSql(true);
-                      showToast('📋 คัดลอกคำสั่ง SQL ทั้งหมดเรียบร้อยแล้ว! นำไปวางใน Supabase SQL Editor ได้เลย');
-                      setTimeout(() => setCopiedSql(false), 3000);
-                    }}
-                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm text-xs"
-                  >
-                    {copiedSql ? (
-                      <>
-                        <Check className="w-3.5 h-3.5" />
-                        <span>คัดลอกเรียบร้อยแล้ว!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>คัดลอกคำสั่ง SQL ทั้งหมด</span>
-                      </>
-                    )}
-                  </button>
+                        navigator.clipboard.writeText(sqlContent);
+                        setCopiedSql(true);
+                        showToast('📋 คัดลอกคำสั่ง SQL ทั้งหมดเรียบร้อยแล้ว! นำไปวางใน Supabase SQL Editor ได้เลย');
+                        setTimeout(() => setCopiedSql(false), 3000);
+                      }}
+                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-xs text-xs"
+                    >
+                      {copiedSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedSql ? 'คัดลอกเรียบร้อยแล้ว!' : 'คัดลอกคำสั่ง SQL ทั้งหมด'}</span>
+                    </button>
+                  )}
                 </div>
 
                 <div className="relative bg-slate-900 text-slate-200 p-4 rounded-2xl font-mono text-[11px] max-h-56 overflow-y-auto border border-slate-800 shadow-inner">
-                  <pre className="whitespace-pre-wrap">{`-- 1. สร้างตารางจัดเก็บข้อมูลตารางทำงาน MARC 21 AI
+                  {cloudSqlTab === 'rls' ? (
+                    <pre className="whitespace-pre-wrap">{`-- ปลดล็อค Row-Level Security (RLS) สำหรับตาราง marc21_records ให้บันทึกและแก้ไขข้อมูลได้ 100%
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
+
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;`}</pre>
+                  ) : (
+                    <pre className="whitespace-pre-wrap">{`-- 1. สร้างตารางจัดเก็บข้อมูลตารางทำงาน MARC 21 AI
 CREATE TABLE IF NOT EXISTS marc21_records (
   id TEXT PRIMARY KEY,
   db_id TEXT,
@@ -6586,8 +7112,16 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. ปิด RLS เพื่อให้อ่าน/เขียนจากหน้าเว็บได้โดยตรง
+-- 2. ปิด RLS และสร้าง Policy อนุญาตให้อ่าน/เขียนได้ 100%
 ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
 
 -- 3. ตั้งค่า Replica Identity เป็น FULL เพื่อให้ Realtime ส่งข้อมูลครบถ้วน
 ALTER TABLE marc21_records REPLICA IDENTITY FULL;
@@ -6608,6 +7142,7 @@ CREATE INDEX IF NOT EXISTS idx_marc21_accession ON marc21_records(accession_no);
 CREATE INDEX IF NOT EXISTS idx_marc21_isbn ON marc21_records(isbn);
 CREATE INDEX IF NOT EXISTS idx_marc21_title ON marc21_records(title_245a);
 CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DESC);`}</pre>
+                  )}
                 </div>
               </div>
 
@@ -6615,9 +7150,13 @@ CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DE
               <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-slate-100 rounded-2xl border border-slate-200">
                 <div className="flex items-center gap-2">
                   <span className="font-semibold text-slate-700">สถานะการเชื่อมต่อปัจจุบัน:</span>
-                  {isCloudRealtimeConnected ? (
+                  {hasRlsError ? (
+                    <span className="font-bold text-rose-700 bg-rose-100 px-2.5 py-1 rounded-lg border border-rose-300 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" /> ติดสิทธิ์ RLS (ต้องรันคำสั่งปลดล็อคใน SQL Editor)
+                    </span>
+                  ) : isCloudRealtimeConnected ? (
                     <span className="font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-300 flex items-center gap-1">
-                      <Check className="w-3.5 h-3.5" /> ออนไลน์ & Realtime สมบูรณ์
+                      <Check className="w-3.5 h-3.5" /> ออนไลน์ & Realtime สมบูรณ์ (อ่านและเขียนได้ 100%)
                     </span>
                   ) : hasCloudTable === false ? (
                     <span className="font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-lg border border-amber-300">
@@ -6640,7 +7179,7 @@ CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DE
                     className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
-                    <span>{isSyncingCloud ? 'กำลังซิงค์...' : 'ทดสอบ & ซิงค์ข้อมูลขึ้น Cloud ตอนนี้'}</span>
+                    <span>{isSyncingCloud ? 'กำลังซิงค์...' : 'ทดสอบสิทธิ์ & ซิงค์ขึ้น Cloud ทันที'}</span>
                   </button>
                   <button
                     type="button"
@@ -6650,6 +7189,251 @@ CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DE
                     ปิดหน้าต่าง
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: IMPORT BOOKS FROM LIBRARY DATABASE */}
+      {isImportBooksModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-indigo-200 overflow-hidden my-6">
+            {/* Modal Header */}
+            <div className="p-5 sm:p-6 bg-gradient-to-r from-indigo-700 via-indigo-800 to-sky-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-white/20 rounded-2xl backdrop-blur-xs">
+                  <Database className="h-6 w-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-extrabold flex items-center gap-2">
+                    <span>ดึงข้อมูลหนังสือจากระบบห้องสมุด (Cloud Database)</span>
+                    <span className="text-[10px] bg-emerald-400 text-slate-950 font-black px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      2,940 เล่ม
+                    </span>
+                  </h3>
+                  <p className="text-xs text-indigo-100">
+                    ดึงรายการหนังสือที่เคยลงไว้จากเครื่องอื่นมาแสดงในตารางทำงาน MARC 21 ได้ทันที
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsImportBooksModalOpen(false)}
+                className="p-1.5 hover:bg-white/20 rounded-full transition text-white/80 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto text-xs text-slate-600 leading-relaxed">
+              {/* Quick Preset Buttons */}
+              <div className="space-y-2">
+                <div className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span>ตัวเลือกด่วน (Quick Presets):</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportMode('range');
+                      setImportAccStart('0000002984');
+                      setImportAccEnd('0000003040');
+                    }}
+                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
+                      importMode === 'range' && importAccStart === '0000002984' && importAccEnd === '0000003040'
+                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
+                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs text-indigo-700 flex items-center gap-1">
+                        <span>🎯 เลขทะเบียน 0000002984 - 0000003040</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">หนังสือที่ลงไว้ล่าสุด (58 เล่ม)</p>
+                    </div>
+                    <span className="text-[10px] font-bold bg-indigo-200/80 text-indigo-900 px-2 py-0.5 rounded-full shrink-0">แนะนำ</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportMode('range');
+                      setImportAccStart('0000002984');
+                      setImportAccEnd('0000003041');
+                    }}
+                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
+                      importMode === 'range' && importAccStart === '0000002984' && importAccEnd === '0000003041'
+                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
+                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs text-indigo-700">
+                        <span>🚀 เลข 0000002984 ถึงเล่มล่าสุด (3041)</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">รวม 59 เล่มล่าสุดในระบบ</p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportMode('recent');
+                      setImportRecentLimit(50);
+                    }}
+                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
+                      importMode === 'recent' && importRecentLimit === 50
+                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
+                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs text-slate-800">
+                        <span>⚡ 50 เล่มล่าสุดในระบบ</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">ดึง 50 เล่มที่มีเลขทะเบียนสูงสุด</p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportMode('all');
+                    }}
+                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
+                      importMode === 'all'
+                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
+                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-bold text-xs text-slate-800">
+                        <span>📚 ดึงรายการทั้งหมดในระบบ</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-0.5">หนังสือทั้งหมดประมาณ 2,940 เล่ม</p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Custom Settings Form */}
+              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-4">
+                <div className="font-bold text-slate-800 text-xs">กำหนดเงื่อนไขการดึงข้อมูล:</div>
+
+                {/* Range inputs */}
+                {importMode === 'range' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        จากเลขทะเบียน (Start Accession No.):
+                      </label>
+                      <input
+                        type="text"
+                        value={importAccStart}
+                        onChange={(e) => setImportAccStart(e.target.value)}
+                        placeholder="เช่น 0000002984 หรือ 2984"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        ถึงเลขทะเบียน (End Accession No.):
+                      </label>
+                      <input
+                        type="text"
+                        value={importAccEnd}
+                        onChange={(e) => setImportAccEnd(e.target.value)}
+                        placeholder="เช่น 0000003040 หรือ 3040"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Recent count selector */}
+                {importMode === 'recent' && (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      จำนวนเล่มล่าสุดที่ต้องการดึง:
+                    </label>
+                    <select
+                      value={importRecentLimit}
+                      onChange={(e) => setImportRecentLimit(parseInt(e.target.value, 10))}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value={20}>20 เล่มล่าสุด</option>
+                      <option value={50}>50 เล่มล่าสุด (ค่าเริ่มต้น)</option>
+                      <option value={100}>100 เล่มล่าสุด</option>
+                      <option value={200}>200 เล่มล่าสุด</option>
+                    </select>
+                  </div>
+                )}
+
+                {/* Target table behavior */}
+                <div className="pt-2 border-t border-slate-200">
+                  <span className="block text-[11px] font-semibold text-slate-700 mb-1.5">
+                    รูปแบบการนำเข้าสู่ตารางทำงาน:
+                  </span>
+                  <div className="flex flex-wrap items-center gap-4">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs">
+                      <input
+                        type="radio"
+                        name="importAppendMode"
+                        checked={importAppendMode === 'replace'}
+                        onChange={() => setImportAppendMode('replace')}
+                        className="text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="font-semibold text-slate-800">แทนที่ตารางปัจจุบัน (ล้างตารางเดิมออก)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer text-xs">
+                      <input
+                        type="radio"
+                        name="importAppendMode"
+                        checked={importAppendMode === 'append'}
+                        onChange={() => setImportAppendMode('append')}
+                        className="text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span className="font-semibold text-slate-800">เพิ่มต่อท้ายตารางเดิม (Append)</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Information Notice */}
+              <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-xl flex items-start gap-2.5 text-xs text-indigo-900">
+                <Info className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                <p>
+                  ระบบจะแปลงข้อมูลหนังสือจากระบบห้องสมุดเป็นรูปแบบตาราง <strong>MARC 21 ครบทั้ง 29 คอลัมน์</strong> พร้อมสร้างเลขคัตเตอร์, เลข DDC, และโครงสร้าง MARC Tags (Leader, 001, 008, 020, 082, 100, 245, 260, 300 ฯลฯ) ให้อัตโนมัติทุกเล่ม
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-100 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+              <span className="text-[11px] text-slate-500">
+                {importMode === 'range' ? `ดึงช่วง ${importAccStart || 'แรก'} ถึง ${importAccEnd || 'ล่าสุด'}` : ''}
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsImportBooksModalOpen(false)}
+                  className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleImportBooksFromDb()}
+                  disabled={isImportingFromDb}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                >
+                  <Download className={`w-3.5 h-3.5 ${isImportingFromDb ? 'animate-bounce' : ''}`} />
+                  <span>{isImportingFromDb ? 'กำลังดึงข้อมูล...' : '📥 ยืนยันการดึงข้อมูลเข้าสู่ตาราง MARC 21'}</span>
+                </button>
               </div>
             </div>
           </div>
