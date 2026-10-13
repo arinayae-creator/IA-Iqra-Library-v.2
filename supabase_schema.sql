@@ -110,9 +110,98 @@ ALTER TABLE categories DISABLE ROW LEVEL SECURITY;
 ALTER TABLE scan_history DISABLE ROW LEVEL SECURITY;
 ALTER TABLE sheet_sync_info DISABLE ROW LEVEL SECURITY;
 
--- 7. สร้าง Index เพื่อเพิ่มความเร็วสูงสุดในการสืบค้นข้อมูล
+-- 7. ตารางจัดเก็บข้อมูลตารางทำงาน MARC 21 AI (marc21_records)
+-- รองรับการใช้งานข้ามอุปกรณ์ (Cross-device Sync) และแสดงผลทันทีโดยไม่ต้องรีเฟรชหน้าจอ (Real-time Sync)
+CREATE TABLE IF NOT EXISTS marc21_records (
+  id TEXT PRIMARY KEY,
+  db_id TEXT,
+  date TEXT,
+  col1 TEXT,
+  accession_no TEXT,
+  isbn TEXT,
+  author_personal TEXT,
+  author_corporate TEXT,
+  title_245a TEXT NOT NULL,
+  title_245b TEXT,
+  responsibility_245c TEXT,
+  ddc_082a TEXT,
+  cutter_082b TEXT,
+  pub_place TEXT,
+  publisher TEXT,
+  pub_year TEXT,
+  pages_300a TEXT,
+  illustration_300b TEXT,
+  subject_650a TEXT,
+  copies TEXT,
+  summary_520 TEXT,
+  edition_250 TEXT,
+  price_541 TEXT,
+  series_490 TEXT,
+  added_entry_700 TEXT,
+  acquisition_source TEXT,
+  col2 TEXT,
+  source_type TEXT,
+  storage_location TEXT,
+  status TEXT DEFAULT 'พร้อมให้บริการ',
+  col3 TEXT,
+  leader_000 TEXT,
+  control_001 TEXT,
+  control_003 TEXT,
+  trans_005 TEXT,
+  fixed_008 TEXT,
+  issn_022 TEXT,
+  cat_source_040 TEXT,
+  language_041 TEXT,
+  title_varying_246 TEXT,
+  dimensions_300c TEXT,
+  note_general_500 TEXT,
+  note_bib_504 TEXT,
+  note_contents_505 TEXT,
+  subject_person_600 TEXT,
+  subject_corp_610 TEXT,
+  subject_uniform_630 TEXT,
+  subject_geo_651 TEXT,
+  subject_650_2 TEXT,
+  subject_650_3 TEXT,
+  added_corp_710 TEXT,
+  added_title_740 TEXT,
+  series_uniform_830 TEXT,
+  electronic_856 TEXT,
+  local_907 TEXT,
+  cover_image TEXT,
+  search_source TEXT,
+  marc_tags JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ปิด RLS เพื่อให้อ่าน/เขียนจากหน้าเว็บได้โดยตรง
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+-- ตั้งค่า Replica Identity เป็น FULL เพื่อให้ Realtime ส่งข้อมูลการแก้ไขและลบครบถ้วนทุกคอลัมน์
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+-- เปิดใช้งาน Supabase Realtime สำหรับตาราง marc21_records
+-- (คอมพิวเตอร์เครื่องที่ 2 จะได้รับข้อมูลอัปเดตทันทีผ่าน WebSocket โดยไม่ต้องรีเฟรชหน้าจอ)
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;
+
+-- 8. สร้าง Index เพื่อเพิ่มความเร็วสูงสุดในการสืบค้นข้อมูล
 CREATE INDEX IF NOT EXISTS idx_books_title ON books(title);
 CREATE INDEX IF NOT EXISTS idx_books_barcode ON books(barcode);
 CREATE INDEX IF NOT EXISTS idx_books_isbn ON books(isbn);
 CREATE INDEX IF NOT EXISTS idx_books_accession ON books(accession_no);
 CREATE INDEX IF NOT EXISTS idx_books_category ON books(category);
+
+CREATE INDEX IF NOT EXISTS idx_marc21_accession ON marc21_records(accession_no);
+CREATE INDEX IF NOT EXISTS idx_marc21_isbn ON marc21_records(isbn);
+CREATE INDEX IF NOT EXISTS idx_marc21_title ON marc21_records(title_245a);
+CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DESC);
+

@@ -27,10 +27,20 @@ import {
   Library,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   FileText,
   Users,
   ClipboardPaste,
-  ImageIcon
+  ImageIcon,
+  Cloud,
+  Radio,
+  Wifi,
+  WifiOff,
+  Code,
+  CheckCircle2
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
@@ -997,6 +1007,14 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     } catch {}
   }, [startAccNum]);
 
+  // Supabase Cloud Realtime Sync States (Cross-device real-time sync)
+  const [isCloudRealtimeConnected, setIsCloudRealtimeConnected] = useState(false);
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [hasCloudTable, setHasCloudTable] = useState<boolean | null>(null);
+  const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
+  const [isCloudSetupModalOpen, setIsCloudSetupModalOpen] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
+
   // Dedicated UC-TAL ThaiLIS (https://uc.thailis.or.th) Box Search States
   const [uctalKeyword, setUctalKeyword] = useState('');
   const [uctalRegion, setUctalRegion] = useState('');
@@ -1334,6 +1352,41 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     return Array.from(set).filter(Boolean);
   }, [records]);
 
+  // Dynamic suggestions for 110 Corporate Authors (นิติบุคคล)
+  const allAvailableCorporateAuthors110 = React.useMemo(() => {
+    const set = new Set<string>([
+      'กรมศิลปากร',
+      'สำนักงานราชบัณฑิตยสภา',
+      'สำนักงานคณะกรรมการการศึกษาขั้นพื้นฐาน',
+      'กระทรวงศึกษาธิการ',
+      'กระทรวงสาธารณสุข',
+      'สำนักงานกองทุนสนับสนุนการสร้างเสริมสุขภาพ (สสส.)',
+      'สำนักพิมพ์จุฬาลงกรณ์มหาวิทยาลัย',
+      'มหาวิทยาลัยธรรมศาสตร์',
+      'มหาวิทยาลัยรามคำแหง',
+      'มหาวิทยาลัยมหิดล',
+      'มหาวิทยาลัยเกษตรศาสตร์',
+      'มหาวิทยาลัยเชียงใหม่',
+      'สถาบันบัณฑิตพัฒนบริหารศาสตร์',
+      'หอสมุดแห่งชาติ',
+      'สมาคมห้องสมุดแห่งประเทศไทย'
+    ]);
+    records.forEach(r => {
+      if (r.author_corporate && r.author_corporate !== '-' && r.author_corporate.trim()) {
+        set.add(r.author_corporate.trim());
+      }
+    });
+    if (Array.isArray(libraryBooks)) {
+      libraryBooks.forEach((b: any) => {
+        const auth = (b.author || '').trim();
+        if (auth && auth !== '-' && isCorporateAuthor(auth)) {
+          set.add(auth);
+        }
+      });
+    }
+    return Array.from(set).filter(Boolean);
+  }, [records, libraryBooks]);
+
   // Handle inline change of storage_location from dropdown
   const handleStorageLocationChange = (recordId: string, newLocation: string) => {
     const autoDdc = getAutoDdcForStorageLocation(newLocation);
@@ -1409,31 +1462,261 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     showToast(`👥 อัปเดต Tag 700 เป็น "${formatted}" เรียบร้อยแล้ว`);
   };
 
-  // Load saved records from localStorage on initial render
+  // Helper to format record payload strictly matching Supabase marc21_records columns
+  const recordToDbPayload = (r: Marc21Record) => {
+    return {
+      id: r.id,
+      db_id: r.db_id || null,
+      date: r.date || null,
+      col1: r.col1 || null,
+      accession_no: r.accession_no || null,
+      isbn: r.isbn || null,
+      author_personal: r.author_personal || null,
+      author_corporate: r.author_corporate || null,
+      title_245a: r.title_245a || 'ไม่มีชื่อเรื่อง',
+      title_245b: r.title_245b || null,
+      responsibility_245c: r.responsibility_245c || null,
+      ddc_082a: r.ddc_082a || null,
+      cutter_082b: r.cutter_082b || null,
+      pub_place: r.pub_place || null,
+      publisher: r.publisher || null,
+      pub_year: r.pub_year || null,
+      pages_300a: r.pages_300a || null,
+      illustration_300b: r.illustration_300b || null,
+      subject_650a: r.subject_650a || null,
+      copies: r.copies || null,
+      summary_520: r.summary_520 || null,
+      edition_250: r.edition_250 || null,
+      price_541: r.price_541 || null,
+      series_490: r.series_490 || null,
+      added_entry_700: r.added_entry_700 || null,
+      acquisition_source: r.acquisition_source || null,
+      col2: r.col2 || null,
+      source_type: r.source_type || null,
+      storage_location: r.storage_location || null,
+      status: r.status || 'พร้อมให้บริการ',
+      col3: r.col3 || null,
+      leader_000: r.leader_000 || null,
+      control_001: r.control_001 || null,
+      control_003: r.control_003 || null,
+      trans_005: r.trans_005 || null,
+      fixed_008: r.fixed_008 || null,
+      issn_022: r.issn_022 || null,
+      cat_source_040: r.cat_source_040 || null,
+      language_041: r.language_041 || null,
+      title_varying_246: r.title_varying_246 || null,
+      dimensions_300c: r.dimensions_300c || null,
+      note_general_500: r.note_general_500 || null,
+      note_bib_504: r.note_bib_504 || null,
+      note_contents_505: r.note_contents_505 || null,
+      subject_person_600: r.subject_person_600 || null,
+      subject_corp_610: r.subject_corp_610 || null,
+      subject_uniform_630: r.subject_uniform_630 || null,
+      subject_geo_651: r.subject_geo_651 || null,
+      subject_650_2: r.subject_650_2 || null,
+      subject_650_3: r.subject_650_3 || null,
+      added_corp_710: r.added_corp_710 || null,
+      added_title_740: r.added_title_740 || null,
+      series_uniform_830: r.series_uniform_830 || null,
+      electronic_856: r.electronic_856 || null,
+      local_907: r.local_907 || null,
+      cover_image: r.cover_image || null,
+      search_source: r.search_source || null,
+      marc_tags: Array.isArray(r.marc_tags) ? r.marc_tags : [],
+      updated_at: new Date().toISOString()
+    };
+  };
+
+  // Sync single record to Supabase Cloud
+  const syncRecordToCloud = async (rec: Marc21Record) => {
+    try {
+      const payload = recordToDbPayload(rec);
+      const { error } = await supabase.from('marc21_records').upsert(payload, { onConflict: 'id' });
+      if (!error) {
+        setHasCloudTable(true);
+      } else if (error.code === '42P01') {
+        setHasCloudTable(false);
+      }
+    } catch {}
+  };
+
+  // Sync batch of records to Supabase Cloud
+  const syncBatchToCloud = async (batch: Marc21Record[]) => {
+    if (!batch || batch.length === 0) return;
+    try {
+      const payloads = batch.map(recordToDbPayload);
+      for (let i = 0; i < payloads.length; i += 50) {
+        const chunk = payloads.slice(i, i + 50);
+        const { error } = await supabase.from('marc21_records').upsert(chunk, { onConflict: 'id' });
+        if (error && error.code === '42P01') {
+          setHasCloudTable(false);
+          return;
+        }
+      }
+      setHasCloudTable(true);
+    } catch {}
+  };
+
+  // Delete single record from Supabase Cloud
+  const deleteRecordFromCloud = async (id: string) => {
+    try {
+      await supabase.from('marc21_records').delete().eq('id', id);
+    } catch {}
+  };
+
+  // Delete batch of records from Supabase Cloud
+  const deleteBatchFromCloud = async (ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    try {
+      await supabase.from('marc21_records').delete().in('id', ids);
+    } catch {}
+  };
+
+  // Delete all records from Supabase Cloud
+  const deleteAllFromCloud = async () => {
+    try {
+      await supabase.from('marc21_records').delete().neq('id', '');
+    } catch {}
+  };
+
+  // 1. Initial Load: Load from localStorage first (zero latency), then load latest from Supabase Cloud
   useEffect(() => {
+    let isMounted = true;
     try {
       const saved = localStorage.getItem('iabs_marc21_records');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
+        if (Array.isArray(parsed) && parsed.length > 0) {
           setRecords(parsed);
-          if (parsed.length > 0) {
-            const maxAcc = parsed.reduce((max, r) => {
+          const maxAcc = parsed.reduce((max, r) => {
+            const num = parseInt(r.accession_no, 10);
+            return !isNaN(num) && num > max ? num : max;
+          }, 2612);
+          setStartAccNum(Math.max(maxAcc + 1, 2613));
+        }
+      }
+    } catch {}
+
+    const loadCloudRecords = async () => {
+      setIsSyncingCloud(true);
+      try {
+        const { data, error } = await supabase
+          .from('marc21_records')
+          .select('*')
+          .order('accession_no', { ascending: true });
+
+        if (!isMounted) return;
+
+        if (!error && data) {
+          setHasCloudTable(true);
+          if (data.length > 0) {
+            const formatted: Marc21Record[] = data.map((d: any) => ({
+              ...d,
+              marc_tags: Array.isArray(d.marc_tags)
+                ? d.marc_tags
+                : (typeof d.marc_tags === 'string' ? JSON.parse(d.marc_tags) : [])
+            }));
+            setRecords(formatted);
+            try {
+              localStorage.setItem('iabs_marc21_records', JSON.stringify(formatted));
+            } catch {}
+            const maxAcc = formatted.reduce((max, r) => {
               const num = parseInt(r.accession_no, 10);
               return !isNaN(num) && num > max ? num : max;
             }, 2612);
             setStartAccNum(Math.max(maxAcc + 1, 2613));
+            setLastCloudSyncTime(new Date().toLocaleTimeString('th-TH'));
           }
-          return;
+        } else if (error) {
+          if (error.code === '42P01') {
+            setHasCloudTable(false);
+          }
         }
+      } catch (err) {
+        console.warn('[Cloud Load Note]:', err);
+      } finally {
+        if (isMounted) setIsSyncingCloud(false);
       }
-      setRecords([]);
-    } catch {
-      setRecords([]);
-    }
+    };
+
+    loadCloudRecords();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  // Save records to localStorage whenever they change
+  // 2. Supabase Realtime Subscription: Sync INSERT, UPDATE, DELETE instantly across all devices
+  useEffect(() => {
+    let isMounted = true;
+    let channel: any = null;
+
+    try {
+      channel = supabase
+        .channel('realtime_marc21_catalog_sync')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'marc21_records' },
+          (payload: any) => {
+            if (!isMounted) return;
+            setLastCloudSyncTime(new Date().toLocaleTimeString('th-TH'));
+
+            if (payload.eventType === 'INSERT' && payload.new) {
+              const row = payload.new;
+              const rec: Marc21Record = {
+                ...row,
+                marc_tags: Array.isArray(row.marc_tags)
+                  ? row.marc_tags
+                  : (typeof row.marc_tags === 'string' ? JSON.parse(row.marc_tags) : [])
+              };
+              setRecords(prev => {
+                if (prev.some(r => r.id === rec.id)) return prev;
+                return [rec, ...prev];
+              });
+              showToast(`⚡ ซิงค์เรียลไทม์: คอมพิวเตอร์เครื่องอื่นเพิ่ม "${rec.title_245a || 'รายการใหม่'}"`);
+            } else if (payload.eventType === 'UPDATE' && payload.new) {
+              const row = payload.new;
+              const rec: Marc21Record = {
+                ...row,
+                marc_tags: Array.isArray(row.marc_tags)
+                  ? row.marc_tags
+                  : (typeof row.marc_tags === 'string' ? JSON.parse(row.marc_tags) : [])
+              };
+              setRecords(prev => prev.map(r => r.id === rec.id ? { ...r, ...rec } : r));
+              showToast(`⚡ ซิงค์เรียลไทม์: อัปเดตรายการ "${rec.title_245a || ''}" อัตโนมัติ`);
+            } else if (payload.eventType === 'DELETE' && payload.old) {
+              const deletedId = payload.old.id;
+              if (deletedId) {
+                setRecords(prev => prev.filter(r => r.id !== deletedId));
+                showToast('⚡ ซิงค์เรียลไทม์: รายการถูกลบจากคอมพิวเตอร์เครื่องอื่น');
+              }
+            }
+          }
+        )
+        .subscribe((status: string) => {
+          if (!isMounted) return;
+          if (status === 'SUBSCRIBED') {
+            setIsCloudRealtimeConnected(true);
+            setHasCloudTable(true);
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            setIsCloudRealtimeConnected(false);
+          }
+        });
+    } catch (err) {
+      console.warn('[Realtime Subscription Exception]:', err);
+    }
+
+    return () => {
+      isMounted = false;
+      if (channel) {
+        try {
+          supabase.removeChannel(channel);
+        } catch {}
+      }
+    };
+  }, []);
+
+  // 3. Save records to localStorage whenever they change
   useEffect(() => {
     try {
       localStorage.setItem('iabs_marc21_records', JSON.stringify(records));
@@ -1446,6 +1729,39 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       }
     } catch {}
   }, [records]);
+
+  // Sync entire current table to Supabase Cloud
+  const handleSyncAllToCloud = async () => {
+    if (records.length === 0) {
+      showToast('⚠️ ไม่มีข้อมูลในตารางสำหรับซิงค์ขึ้น Cloud');
+      return;
+    }
+    setIsSyncingCloud(true);
+    try {
+      const payloads = records.map(recordToDbPayload);
+      for (let i = 0; i < payloads.length; i += 50) {
+        const chunk = payloads.slice(i, i + 50);
+        const { error } = await supabase.from('marc21_records').upsert(chunk, { onConflict: 'id' });
+        if (error) {
+          if (error.code === '42P01') {
+            setHasCloudTable(false);
+            setIsCloudSetupModalOpen(true);
+            showToast('⚠️ ยังไม่ได้สร้างตาราง marc21_records ใน Supabase กรุณารัน SQL ตามขั้นตอน');
+            return;
+          }
+          throw error;
+        }
+      }
+      setHasCloudTable(true);
+      setLastCloudSyncTime(new Date().toLocaleTimeString('th-TH'));
+      showToast(`☁️ ซิงค์ข้อมูลทั้งหมด ${records.length} รายการขึ้น Supabase Cloud สำเร็จ! ทุกอุปกรณ์จะเห็นตรงกันทันที`);
+    } catch (err: any) {
+      console.error('Cloud Sync Error:', err);
+      showToast(`❌ ซิงค์ไม่สำเร็จ: ${err.message || 'โปรดตรวจสอบการเชื่อมต่อ'}`);
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -1852,6 +2168,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
       setRecords(prev => [...fallbackRecords, ...prev]);
       setStartAccNum(Math.max(...Array.from(existingUsed)) + 1);
+      syncBatchToCloud(fallbackRecords);
       showToast(`✨ สร้างรายการบรรณานุกรมสำเร็จ ${fallbackRecords.length} เล่ม (เริ่ม 0000002613 ไม่มีเลขซ้ำ)`);
       setSearchQuery('');
       setBatchQueries('');
@@ -1899,6 +2216,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
           setRecords(prev => [...adjustedRecords, ...prev]);
           setStartAccNum(Math.max(...Array.from(existingUsed)) + 1);
+          syncBatchToCloud(adjustedRecords);
           showToast(`✨ สร้างรายการบรรณานุกรมสำเร็จ ${adjustedRecords.length} รายการ (เริ่มหลัง 0000002612 ไม่มีเลขซ้ำ)`);
           setSearchQuery('');
           setBatchQueries('');
@@ -2085,6 +2403,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
     setRecords(prev => [newRecord, ...prev]);
     setStartAccNum(runAcc + 1);
+    syncRecordToCloud(newRecord);
     showToast(`✅ นำเข้าข้อมูลเล่ม "${newRecord.title_245a.substring(0, 30)}..." ${institutionName ? `(สถาบัน: ${institutionName})` : ''} สู่ตารางครบถ้วนทุก MARC Tag เรียบร้อย!`);
   };
 
@@ -2189,6 +2508,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
       setRecords(prev => [...parsedRecords, ...prev]);
       setStartAccNum(nextAcc);
+      syncBatchToCloud(parsedRecords);
       showToast(`✨ นำเข้าข้อมูลตารางสำเร็จ ${parsedRecords.length} รายการ (รักษาเลขทะเบียนเดิมและ ISBN ซ้ำได้สมบูรณ์)`);
       setBatchQueries('');
       setIsBatchOpen(false);
@@ -2209,11 +2529,117 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   };
 
   const toggleSelectAll = () => {
-    if (selectedIds.size === records.length) {
+    if (selectedIds.size === records.length && records.length > 0) {
       setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(records.map(r => r.id)));
     }
+  };
+
+  // Sorting state for Accession No. (ACC)
+  const [accSortOrder, setAccSortOrder] = useState<'asc' | 'desc' | null>(null);
+
+  const handleSortByAccession = (direction: 'asc' | 'desc') => {
+    setAccSortOrder(direction);
+    setCurrentPage(1);
+    setRecords(prev => {
+      const sorted = [...prev].sort((a, b) => {
+        const numA = parseInt(a.accession_no || '', 10);
+        const numB = parseInt(b.accession_no || '', 10);
+        const validA = !isNaN(numA);
+        const validB = !isNaN(numB);
+
+        if (validA && validB) {
+          return direction === 'asc' ? numA - numB : numB - numA;
+        }
+        const strA = String(a.accession_no || '');
+        const strB = String(b.accession_no || '');
+        return direction === 'asc'
+          ? strA.localeCompare(strB, undefined, { numeric: true })
+          : strB.localeCompare(strA, undefined, { numeric: true });
+      });
+      return sorted;
+    });
+    if (tableContainerRef.current) {
+      tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    showToast(
+      direction === 'asc'
+        ? '🔢 เรียงเลขทะเบียนจาก น้อยไปมาก (น้อย ➜ มาก) เรียบร้อยแล้ว'
+        : '🔢 เรียงเลขทะเบียนจาก มากไปน้อย (มาก ➜ น้อย) เรียบร้อยแล้ว'
+    );
+  };
+
+  // Table Pagination States (Default 50 items/rows per page as requested)
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [jumpInputPage, setJumpInputPage] = useState<string>('1');
+  const tableContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+
+  // Sync jump input and clamp page
+  useEffect(() => {
+    setJumpInputPage(String(currentPage));
+  }, [currentPage]);
+
+  useEffect(() => {
+    const maxP = Math.max(1, Math.ceil(records.length / pageSize));
+    if (currentPage > maxP) {
+      setCurrentPage(maxP);
+    } else if (currentPage < 1) {
+      setCurrentPage(1);
+    }
+  }, [records.length, pageSize, currentPage]);
+
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, records.length);
+  const paginatedRecords = React.useMemo(() => {
+    return records.slice(startIndex, endIndex);
+  }, [records, startIndex, endIndex]);
+
+  const isAllCurrentPageSelected = React.useMemo(() => {
+    return paginatedRecords.length > 0 && paginatedRecords.every(r => selectedIds.has(r.id));
+  }, [paginatedRecords, selectedIds]);
+
+  const toggleSelectCurrentPage = () => {
+    if (isAllCurrentPageSelected) {
+      const pageIds = new Set(paginatedRecords.map(r => r.id));
+      setSelectedIds(prev => new Set([...prev].filter(id => !pageIds.has(id))));
+    } else {
+      setSelectedIds(prev => new Set([...prev, ...paginatedRecords.map(r => r.id)]));
+    }
+  };
+
+  const handlePageChange = (newPage: number) => {
+    const clamped = Math.max(1, Math.min(totalPages, newPage));
+    setCurrentPage(clamped);
+    if (tableContainerRef.current) {
+      tableContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
+  const getPaginationGroup = () => {
+    const delta = 2;
+    const range: (number | string)[] = [];
+    const left = currentPage - delta;
+    const right = currentPage + delta + 1;
+    let l: number | undefined;
+
+    for (let i = 1; i <= totalPages; i++) {
+      if (i === 1 || i === totalPages || (i >= left && i < right)) {
+        if (l !== undefined) {
+          if (i - l === 2) {
+            range.push(l + 1);
+          } else if (i - l !== 1) {
+            range.push('...');
+          }
+        }
+        range.push(i);
+        l = i;
+      }
+    }
+    return range;
   };
 
   // Get exact content as displayed in table cells for copying/exporting
@@ -2386,7 +2812,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   // Shared helper to cleanly sync/upsert a Marc21Record to Supabase with automatic deduplication
   const syncBookRecordToSupabase = async (r: Marc21Record) => {
     const cleanTitle = r.title_245a.split(' / ')[0].trim();
-    const cleanAuthor = r.author_personal.replace(/\.$/, '').trim();
+    const cleanAuthor = ((r.author_personal && r.author_personal !== '-') ? r.author_personal : (r.author_corporate && r.author_corporate !== '-' ? r.author_corporate : '')).replace(/\.$/, '').trim();
     const cleanIsbn = r.isbn ? r.isbn.trim() : '';
 
     // 1. Resolve or reuse stable database primary key based on accession number
@@ -2574,9 +3000,11 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   // Perform actual deletion of selected records after confirmation
   const confirmDeleteSelectedExecution = () => {
     const deletedCount = selectedIds.size;
+    const idsToDelete = Array.from(selectedIds);
     setRecords(prev => prev.filter(r => !selectedIds.has(r.id)));
     setSelectedIds(new Set());
     setDeleteConfirmTarget(null);
+    deleteBatchFromCloud(idsToDelete);
     showToast(`🗑️ ลบรายการที่เลือกจำนวน ${deletedCount} รายการเรียบร้อยแล้ว`);
   };
 
@@ -2669,6 +3097,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     }));
     setRecords(updated);
     setStartAccNum(base + records.length);
+    syncBatchToCloud(updated);
     showToast(`🔢 จัดเรียงเลขทะเบียนใหม่ ${records.length} แถว (เริ่ม ${String(base).padStart(10, '0')} ต่อเนื่อง ไม่มีเลขซ้ำ) สำเร็จ!`);
   };
 
@@ -2715,6 +3144,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     setRecords(prev => [newRecord, ...prev]);
     setStartAccNum(nextNum + 1);
     setEditingRecord(newRecord);
+    syncRecordToCloud(newRecord);
   };
 
   // Delete row immediately without showing any confirmation dialog
@@ -2736,6 +3166,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       } catch {}
     }
 
+    deleteRecordFromCloud(id);
     showToast('🗑️ ลบแถวเรียบร้อยแล้ว');
   };
 
@@ -3102,6 +3533,63 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         )}
       </div>
 
+      {/* Cloud Cross-Device & Real-time Sync Status Control Bar */}
+      <div className="bg-gradient-to-r from-indigo-50/90 via-sky-50/90 to-emerald-50/90 border border-indigo-200/90 p-3.5 sm:p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-2xs flex items-center justify-center shrink-0">
+            <Radio className="w-4 h-4 text-emerald-300 animate-pulse" />
+          </div>
+          <div>
+            <div className="font-bold text-slate-800 text-xs sm:text-sm flex flex-wrap items-center gap-2">
+              <span>การเชื่อมต่อข้ามอุปกรณ์ & Real-time Sync</span>
+              {isCloudRealtimeConnected ? (
+                <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1.5 shadow-xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                  🟢 เชื่อมต่อ Cloud Realtime แล้ว (ซิงค์ทุกเครื่องทันที)
+                </span>
+              ) : hasCloudTable === false ? (
+                <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-xs">
+                  🟡 ยังไม่ได้สร้างตาราง marc21_records ใน Supabase
+                </span>
+              ) : (
+                <span className="text-[10px] bg-sky-100 text-sky-800 border border-sky-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-xs">
+                  <RefreshCw className="w-3 h-3 animate-spin text-sky-600" />
+                  กำลังเชื่อมต่อ Cloud Realtime...
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              {isCloudRealtimeConnected
+                ? `ทุกเครื่อง (คอมที่ 1, คอมที่ 2, มือถือ) จะเห็นข้อมูลอัปเดตตรงกันทันทีแบบ Real-time โดยไม่ต้องรีเฟรชหน้าจอ ${lastCloudSyncTime ? `(อัปเดตล่าสุด: ${lastCloudSyncTime})` : ''}`
+                : 'หากต้องการให้คอม 1 และคอม 2 เห็นข้อมูลตรงกันทันทีแบบไม่ต้องรีเฟรชหน้าจอ คลิกปุ่ม "วิธีตั้งค่า SQL" ด้านขวา'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleSyncAllToCloud}
+            disabled={isSyncingCloud || records.length === 0}
+            className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
+            title="อัปโหลดข้อมูลในตารางทั้งหมดขึ้น Supabase Cloud ให้ทุกเครื่องมองเห็นทันที"
+          >
+            <Cloud className="w-3.5 h-3.5" />
+            <span>{isSyncingCloud ? 'กำลังซิงค์...' : `ซิงค์ขึ้น Cloud (${records.length})`}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsCloudSetupModalOpen(true)}
+            className="px-3.5 py-2 bg-white border border-indigo-300 hover:bg-indigo-50 text-indigo-700 font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
+            title="คลิกเพื่อดูวิธีตั้งค่า SQL บน Supabase ให้แสดงผลทุกอุปกรณ์แบบ Real-time"
+          >
+            <Code className="w-3.5 h-3.5 text-indigo-600" />
+            <span>วิธีตั้งค่า SQL (ซิงค์ทุกเครื่อง)</span>
+          </button>
+        </div>
+      </div>
+
       {/* Accession Number Settings Control Bar */}
       <div className="bg-emerald-50/80 border border-emerald-200 p-3.5 sm:p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
         <div className="flex items-center gap-3">
@@ -3192,6 +3680,21 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
             <span>เลือกทั้งหมด ({records.length})</span>
           </button>
 
+          {records.length > pageSize && (
+            <button
+              onClick={toggleSelectCurrentPage}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+              title="เลือกหรือยกเลิกเลือกเฉพาะรายการในหน้านี้"
+            >
+              {isAllCurrentPageSelected ? (
+                <CheckSquare className="w-4 h-4 text-emerald-600" />
+              ) : (
+                <Square className="w-4 h-4 text-slate-400" />
+              )}
+              <span>เลือกเฉพาะหน้านี้ ({paginatedRecords.length})</span>
+            </button>
+          )}
+
           {selectedIds.size > 0 && (
             <span className="text-xs font-bold text-emerald-700 bg-emerald-100/70 px-2.5 py-1 rounded-md">
               เลือกอยู่ {selectedIds.size} รายการ
@@ -3268,6 +3771,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
               if (confirm('คุณแน่ใจหรือไม่ว่าต้องการล้างข้อมูลในตารางทั้งหมด?')) {
                 setRecords([]);
                 setSelectedIds(new Set());
+                deleteAllFromCloud();
                 showToast('🧹 ล้างตารางเรียบร้อยแล้ว');
               }
             }}
@@ -3280,9 +3784,67 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         </div>
       </div>
 
+      {/* Top Pagination & Quick Nav Bar */}
+      {records.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-slate-100/90 rounded-2xl border border-slate-200 text-xs text-slate-600">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-slate-700">
+              แสดงรายการที่ <strong className="text-emerald-700 font-bold">{startIndex + 1} - {endIndex}</strong> จากทั้งหมด <strong className="text-slate-900 font-bold">{records.length.toLocaleString()}</strong> รายการ (หน้าละ {pageSize} รายการ)
+            </span>
+            {selectedIds.size > 0 && (
+              <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md border border-emerald-300">
+                เลือก {selectedIds.size} / {records.length} รายการ
+              </span>
+            )}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage <= 1}
+                className="p-1 rounded bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+                title="หน้าแรก"
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage <= 1}
+                className="px-2 py-1 text-xs font-semibold rounded bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition cursor-pointer"
+                title="หน้าก่อนหน้า"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span>ก่อนหน้า</span>
+              </button>
+              <span className="px-2 py-1 font-bold text-slate-800 text-xs bg-white rounded border border-slate-200 shadow-2xs">
+                หน้า {currentPage} / {totalPages}
+              </span>
+              <button
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="px-2 py-1 text-xs font-semibold rounded bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed flex items-center gap-1 transition cursor-pointer"
+                title="หน้าถัดไป"
+              >
+                <span>ถัดไป</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage >= totalPages}
+                className="p-1 rounded bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition cursor-pointer"
+                title="หน้าสุดท้าย"
+              >
+                <ChevronsRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Excel-style Spreadsheet Table Container */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-        <div className="overflow-x-auto max-h-[620px] relative scrollbar-thin scrollbar-thumb-slate-300">
+        <div ref={tableContainerRef} className="overflow-x-auto max-h-[620px] relative scrollbar-thin scrollbar-thumb-slate-300">
           <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
             {/* Frozen Table Header */}
             <thead className="sticky top-0 z-20 bg-slate-800 text-white font-semibold select-none shadow-md">
@@ -3290,26 +3852,76 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                 <th className="p-3 w-12 text-center bg-slate-900 sticky left-0 z-30">
                   <input
                     type="checkbox"
-                    checked={selectedIds.size === records.length && records.length > 0}
-                    onChange={toggleSelectAll}
+                    checked={isAllCurrentPageSelected}
+                    onChange={toggleSelectCurrentPage}
                     className="rounded border-slate-600 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                    title={isAllCurrentPageSelected ? "ยกเลิกเลือกหน้านี้" : "เลือกทั้งหมดในหน้านี้ (50 รายการ)"}
                   />
                 </th>
                 <th className="p-3 w-36 text-center bg-slate-900 sticky left-12 z-30">
                   จัดการ
                 </th>
-                {MARC21_COLUMNS.map((col) => (
-                  <th key={col.key} className={`p-3 font-semibold text-slate-200 ${col.width}`}>
-                    <div className="flex flex-col">
-                      <span className="text-[10px] font-mono text-emerald-400 tracking-wider">
-                        {col.tag}
-                      </span>
-                      <span className="truncate" title={col.label}>
-                        {col.label.replace(/\n/g, ' ')}
-                      </span>
-                    </div>
-                  </th>
-                ))}
+                {MARC21_COLUMNS.map((col) => {
+                  if (col.key === 'accession_no') {
+                    return (
+                      <th
+                        key={col.key}
+                        className={`p-3 font-semibold text-slate-200 ${col.width}`}
+                      >
+                        <div className="flex flex-col">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-mono text-emerald-400 tracking-wider">
+                              {col.tag}
+                            </span>
+                            {/* มีแค่สัญลักษณ์ลูกศร ▲ และ ▼ เท่านั้น ที่เดียว ไม่ต้องใส่ข้อความ */}
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                onClick={() => handleSortByAccession('asc')}
+                                className={`w-4 h-4 rounded flex items-center justify-center text-[10px] leading-none transition cursor-pointer ${
+                                  accSortOrder === 'asc'
+                                    ? 'bg-emerald-500 text-white font-bold shadow-xs'
+                                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                }`}
+                                title="เรียงเลขทะเบียน: น้อยไปมาก (▲)"
+                              >
+                                ▲
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSortByAccession('desc')}
+                                className={`w-4 h-4 rounded flex items-center justify-center text-[10px] leading-none transition cursor-pointer ${
+                                  accSortOrder === 'desc'
+                                    ? 'bg-amber-500 text-white font-bold shadow-xs'
+                                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                                }`}
+                                title="เรียงเลขทะเบียน: มากไปน้อย (▼)"
+                              >
+                                ▼
+                              </button>
+                            </div>
+                          </div>
+                          <span className="truncate" title={col.label}>
+                            {col.label}
+                          </span>
+                        </div>
+                      </th>
+                    );
+                  }
+
+                  return (
+                    <th key={col.key} className={`p-3 font-semibold text-slate-200 ${col.width}`}>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-mono text-emerald-400 tracking-wider">
+                          {col.tag}
+                        </span>
+                        <span className="truncate" title={col.label}>
+                          {col.label.replace(/\n/g, ' ')}
+                        </span>
+                      </div>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
 
@@ -3326,7 +3938,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   </td>
                 </tr>
               ) : (
-                records.map((r, rowIdx) => {
+                paginatedRecords.map((r, rowIdx) => {
                   const isSelected = selectedIds.has(r.id);
                   return (
                     <tr 
@@ -3655,16 +4267,150 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
           </table>
         </div>
 
-        {/* Table Footer info */}
-        <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between text-xs text-slate-500 gap-2">
-          <div className="flex items-center gap-2">
-            <span>แสดงทั้งหมด <strong>{records.length}</strong> แถว (<strong>{MARC21_COLUMNS.length}</strong> คอลัมน์ พร้อมข้อมูล MARC 21 Tags ทั้งหมดสมบูรณ์แบบ)</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-slate-400">
-              💡 คลิกไอคอน <Copy className="w-3 h-3 inline text-emerald-700" /> เพื่อคัดลอกแถวไปวางใน Excel ได้ทันที
+        {/* Table Footer info with Complete Pagination Controls */}
+        <div className="p-3 sm:p-4 bg-slate-50 border-t border-slate-200 flex flex-col md:flex-row items-center justify-between text-xs text-slate-600 gap-3">
+          {/* Left: Summary text & Page size selector */}
+          <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-between md:justify-start">
+            <span className="text-slate-600">
+              {records.length === 0 ? (
+                'ไม่มีข้อมูลรายการในตาราง'
+              ) : (
+                <>
+                  แสดงรายการที่ <strong className="text-emerald-700 font-bold">{startIndex + 1} - {endIndex}</strong> จากทั้งหมด <strong className="text-slate-900 font-bold">{records.length.toLocaleString()}</strong> รายการ ({MARC21_COLUMNS.length} คอลัมน์)
+                </>
+              )}
             </span>
+
+            {records.length > 0 && (
+              <div className="flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-2xs">
+                <span className="text-slate-500 font-medium">แสดงหน้าละ:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value, 10);
+                    setPageSize(val);
+                    setCurrentPage(1);
+                  }}
+                  className="bg-transparent font-bold text-slate-800 text-xs focus:outline-none cursor-pointer"
+                >
+                  <option value={50}>50 แถว (ค่าเริ่มต้น)</option>
+                  <option value={100}>100 แถว</option>
+                  <option value={200}>200 แถว</option>
+                  <option value={500}>500 แถว</option>
+                  <option value={records.length > 0 ? records.length : 1000}>ทั้งหมด ({records.length} แถว)</option>
+                </select>
+              </div>
+            )}
           </div>
+
+          {/* Right: Pagination Navigation Controls */}
+          {records.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 w-full md:w-auto justify-center md:justify-end">
+              {/* First Page */}
+              <button
+                onClick={() => handlePageChange(1)}
+                disabled={currentPage <= 1}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition shadow-2xs cursor-pointer"
+                title="หน้าแรก"
+              >
+                <ChevronsLeft className="w-4 h-4" />
+              </button>
+
+              {/* Previous Page */}
+              <button
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage <= 1}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-700 font-semibold text-xs flex items-center gap-1 transition shadow-2xs cursor-pointer"
+                title="หน้าก่อนหน้า"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">ก่อนหน้า</span>
+              </button>
+
+              {/* Page Number Buttons */}
+              <div className="flex items-center gap-1">
+                {getPaginationGroup().map((item, idx) => {
+                  if (item === '...') {
+                    return (
+                      <span key={`ellipsis_${idx}`} className="px-1.5 py-1 text-slate-400 select-none">
+                        ...
+                      </span>
+                    );
+                  }
+                  const pageNum = item as number;
+                  const isActive = pageNum === currentPage;
+                  return (
+                    <button
+                      key={`page_btn_${pageNum}`}
+                      onClick={() => handlePageChange(pageNum)}
+                      className={`min-w-[32px] h-8 px-2 rounded-lg text-xs font-bold transition flex items-center justify-center cursor-pointer ${
+                        isActive
+                          ? 'bg-emerald-600 text-white shadow-sm ring-1 ring-emerald-600'
+                          : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 hover:border-slate-300'
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Next Page */}
+              <button
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-700 font-semibold text-xs flex items-center gap-1 transition shadow-2xs cursor-pointer"
+                title="หน้าถัดไป"
+              >
+                <span className="hidden sm:inline">ถัดไป</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Last Page */}
+              <button
+                onClick={() => handlePageChange(totalPages)}
+                disabled={currentPage >= totalPages}
+                className="p-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed text-slate-600 transition shadow-2xs cursor-pointer"
+                title="หน้าสุดท้าย"
+              >
+                <ChevronsRight className="w-4 h-4" />
+              </button>
+
+              {/* Quick Jump Input if more than 3 pages */}
+              {totalPages > 3 && (
+                <div className="flex items-center gap-1 text-xs text-slate-500 pl-2 border-l border-slate-200 ml-1">
+                  <span>ไปหน้า:</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={totalPages}
+                    value={jumpInputPage}
+                    onChange={(e) => setJumpInputPage(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const p = parseInt(jumpInputPage, 10);
+                        if (!isNaN(p) && p >= 1 && p <= totalPages) {
+                          handlePageChange(p);
+                        }
+                      }
+                    }}
+                    className="w-11 px-1.5 py-1 bg-white border border-slate-300 rounded text-center text-xs font-semibold focus:ring-1 focus:ring-emerald-500 focus:outline-none"
+                  />
+                  <button
+                    onClick={() => {
+                      const p = parseInt(jumpInputPage, 10);
+                      if (!isNaN(p) && p >= 1 && p <= totalPages) {
+                        handlePageChange(p);
+                      }
+                    }}
+                    className="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-xs font-semibold transition cursor-pointer"
+                  >
+                    ไป
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -3931,7 +4677,14 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                       </tr>
                       <tr>
                         <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">ผู้แต่ง</td>
-                        <td className="py-2.5 px-4 text-slate-800">{editingRecord.author_personal || '-'}</td>
+                        <td className="py-2.5 px-4 text-slate-800">
+                          {(() => {
+                            const p = editingRecord.author_personal && editingRecord.author_personal !== '-' ? editingRecord.author_personal : '';
+                            const c = editingRecord.author_corporate && editingRecord.author_corporate !== '-' ? editingRecord.author_corporate : '';
+                            if (p && c) return `${p} / ${c}`;
+                            return p || c || '-';
+                          })()}
+                        </td>
                       </tr>
                       <tr>
                         <td className="py-2.5 px-4 font-bold text-slate-900 bg-slate-50/70 align-top">ชื่อเรื่อง</td>
@@ -4161,6 +4914,40 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   records={records}
                   currentTitle={editingRecord.title_245a}
                 />
+              </div>
+
+              {/* 110 ผู้แต่ง (ชื่อนิติบุคคล) */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">110 ผู้แต่ง (ชื่อนิติบุคคล)</label>
+                <input
+                  type="text"
+                  list="corporate-authors-110-options"
+                  value={editingRecord.author_corporate && editingRecord.author_corporate !== '-' ? editingRecord.author_corporate : ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const updated = { ...editingRecord, author_corporate: val };
+                    // If author_personal is empty or '-', calculate Cutter from corporate author if cutter not yet set
+                    if ((!editingRecord.author_personal || editingRecord.author_personal === '-') && val.trim() && val.trim() !== '-') {
+                      const existingCutters = new Set(
+                        records
+                          .filter(r => r.id !== editingRecord.id && r.cutter_082b)
+                          .map(r => r.cutter_082b)
+                      );
+                      const res = getExistingOrCalculatedCutter(val, editingRecord.title_245a, records, existingCutters);
+                      if (res.cutter) {
+                        updated.cutter_082b = res.cutter;
+                      }
+                    }
+                    setEditingRecord(updated);
+                  }}
+                  placeholder="เช่น กรมศิลปากร, มหาวิทยาลัย หรือ -"
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500 text-slate-800"
+                />
+                <datalist id="corporate-authors-110-options">
+                  {allAvailableCorporateAuthors110.map((item, idx) => (
+                    <option key={`dl_corp_${idx}`} value={item} />
+                  ))}
+                </datalist>
               </div>
 
               {/* 245 $a : $b = 246 $a (ชื่อเรื่องเต็ม / ชื่อเรื่องคู่ขนาน) */}
@@ -4688,6 +5475,22 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                     if (idx250 >= 0) updatedTags[idx250] = tagObj;
                     else updatedTags.push(tagObj);
                   }
+                  if (editingRecord.author_personal && editingRecord.author_personal !== '-') {
+                    const idx100 = updatedTags.findIndex(t => t.tagID === '100' || (t as any).tag === '100');
+                    const tagObj = { tagID: '100', indc1: '1', indc2: '', data: `$a${editingRecord.author_personal}` };
+                    if (idx100 >= 0) updatedTags[idx100] = tagObj;
+                    else updatedTags.push(tagObj);
+                  } else {
+                    updatedTags = updatedTags.filter(t => t.tagID !== '100' && (t as any).tag !== '100');
+                  }
+                  if (editingRecord.author_corporate && editingRecord.author_corporate !== '-') {
+                    const idx110 = updatedTags.findIndex(t => t.tagID === '110' || (t as any).tag === '110');
+                    const tagObj = { tagID: '110', indc1: '2', indc2: '', data: `$a${editingRecord.author_corporate}` };
+                    if (idx110 >= 0) updatedTags[idx110] = tagObj;
+                    else updatedTags.push(tagObj);
+                  } else {
+                    updatedTags = updatedTags.filter(t => t.tagID !== '110' && (t as any).tag !== '110');
+                  }
                   if (editingRecord.added_entry_700 && editingRecord.added_entry_700 !== '-') {
                     const idx700 = updatedTags.findIndex(t => t.tagID === '700' || (t as any).tag === '700');
                     const tagObj = { tagID: '700', indc1: '1', indc2: '', data: `$a${editingRecord.added_entry_700}` };
@@ -4734,6 +5537,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   const finalRec = { ...editingRecord, marc_tags: updatedTags };
                   setRecords(prev => prev.map(item => item.id === finalRec.id ? finalRec : item));
                   await handleSyncToLibrary(finalRec);
+                  syncRecordToCloud(finalRec);
                   setEditingRecord(null);
                   showToast(`💾 บันทึกข้อมูลบรรณานุกรม "${finalRec.title_245a.substring(0, 25)}..." เรียบร้อยแล้ว`);
                 }}
@@ -5519,6 +6323,333 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   <Trash2 className="h-4 w-4" />
                   <span>ยืนยันการลบ</span>
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUPABASE CLOUD & REAL-TIME SETUP MODAL */}
+      {isCloudSetupModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-3xl w-full shadow-2xl border border-indigo-200 overflow-hidden my-6">
+            {/* Modal Header */}
+            <div className="p-5 sm:p-6 bg-gradient-to-r from-indigo-600 via-indigo-700 to-sky-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-white/20 rounded-2xl backdrop-blur-xs">
+                  <Database className="h-6 w-6 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-extrabold flex items-center gap-2">
+                    <span>ตั้งค่าตาราง SQL ใน Supabase สำหรับซิงค์ข้อมูล Real-time</span>
+                    <span className="text-[10px] bg-emerald-400 text-slate-950 font-black px-2 py-0.5 rounded-full uppercase tracking-wider">
+                      Cross-Device
+                    </span>
+                  </h3>
+                  <p className="text-xs text-indigo-100">
+                    แสดงข้อมูลตรงกันทุกอุปกรณ์ทันทีเมื่อลงข้อมูล โดยไม่ต้องกดรีเฟรชหน้าจอ (F5)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCloudSetupModalOpen(false)}
+                className="p-1.5 hover:bg-white/20 rounded-full transition text-white/80 hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto text-xs text-slate-600 leading-relaxed">
+              {/* Status & Explanation Box */}
+              <div className="p-4 bg-indigo-50/80 border border-indigo-200 rounded-2xl space-y-2">
+                <div className="font-bold text-indigo-950 flex items-center gap-2 text-sm">
+                  <Info className="w-4 h-4 text-indigo-600" />
+                  <span>ทำไมต้องสร้างตารางใน SQL ใน Supabase?</span>
+                </div>
+                <p className="text-slate-700">
+                  ปัจจุบัน หากยังไม่ได้สร้างตารางใน Supabase ข้อมูลในตารางของหน้า <strong>สร้าง MARC 21 (MARC 21 AI)</strong> จะถูกเก็บไว้ใน <strong>LocalStorage (หน่วยความจำของบราวเซอร์ในเครื่องนั้นๆ)</strong> ทำให้คอมพิวเตอร์เครื่องที่ 2 หรืออุปกรณ์อื่นมองไม่เห็นข้อมูลที่ลงจากเครื่องที่ 1
+                </p>
+                <p className="text-emerald-800 font-medium">
+                  💡 <strong>เมื่อสร้างตาราง <code className="bg-white px-1.5 py-0.5 rounded border border-emerald-300 font-mono text-emerald-950">marc21_records</code> และเปิด Supabase Realtime แล้ว:</strong> ทุกครั้งที่คอมที่ 1 มีการลงข้อมูล/แก้ไข/ลบ ระบบ Supabase จะส่งสัญญาณ WebSocket ไปอัปเดตหน้าจอของคอมที่ 2 ให้เห็นผลทันทีในเสี้ยววินาที <strong>โดยไม่ต้องกดรีเฟรชหน้าจอเลย!</strong>
+                </p>
+              </div>
+
+              {/* 3 Steps Guide */}
+              <div className="space-y-3">
+                <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                  <span className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs">✓</span>
+                  <span>วิธีทำง่ายๆ เพียง 3 ขั้นตอน (ใช้เวลาไม่ถึง 1 นาที)</span>
+                </h4>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                    <div className="font-bold text-indigo-700 text-xs">ขั้นตอนที่ 1</div>
+                    <p className="text-slate-700">
+                      เปิดเว็บ <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="text-indigo-600 underline font-semibold inline-flex items-center gap-0.5">Supabase Dashboard <ExternalLink className="w-2.5 h-2.5" /></a> แล้วเลือกโปรเจกต์ของคุณ
+                    </p>
+                  </div>
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                    <div className="font-bold text-indigo-700 text-xs">ขั้นตอนที่ 2</div>
+                    <p className="text-slate-700">
+                      ไปที่เมนูด้านซ้าย <strong>"SQL Editor"</strong> แล้วกดปุ่ม <strong>"+ New query"</strong>
+                    </p>
+                  </div>
+                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                    <div className="font-bold text-indigo-700 text-xs">ขั้นตอนที่ 3</div>
+                    <p className="text-slate-700">
+                      กดปุ่ม <strong>"คัดลอกคำสั่ง SQL ทั้งหมด"</strong> ด้านล่างนี้ นำไปวางในช่อง แล้วกดปุ่มเขียว <strong>"Run" (หรือกด Ctrl+Enter)</strong>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* SQL Code Block with Copy Button */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800 text-xs">
+                    คำสั่ง SQL สำหรับสร้างตาราง & เปิด Supabase Realtime:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sqlContent = `-- 1. สร้างตารางจัดเก็บข้อมูลตารางทำงาน MARC 21 AI
+CREATE TABLE IF NOT EXISTS marc21_records (
+  id TEXT PRIMARY KEY,
+  db_id TEXT,
+  date TEXT,
+  col1 TEXT,
+  accession_no TEXT,
+  isbn TEXT,
+  author_personal TEXT,
+  author_corporate TEXT,
+  title_245a TEXT NOT NULL,
+  title_245b TEXT,
+  responsibility_245c TEXT,
+  ddc_082a TEXT,
+  cutter_082b TEXT,
+  pub_place TEXT,
+  publisher TEXT,
+  pub_year TEXT,
+  pages_300a TEXT,
+  illustration_300b TEXT,
+  subject_650a TEXT,
+  copies TEXT,
+  summary_520 TEXT,
+  edition_250 TEXT,
+  price_541 TEXT,
+  series_490 TEXT,
+  added_entry_700 TEXT,
+  acquisition_source TEXT,
+  col2 TEXT,
+  source_type TEXT,
+  storage_location TEXT,
+  status TEXT DEFAULT 'พร้อมให้บริการ',
+  col3 TEXT,
+  leader_000 TEXT,
+  control_001 TEXT,
+  control_003 TEXT,
+  trans_005 TEXT,
+  fixed_008 TEXT,
+  issn_022 TEXT,
+  cat_source_040 TEXT,
+  language_041 TEXT,
+  title_varying_246 TEXT,
+  dimensions_300c TEXT,
+  note_general_500 TEXT,
+  note_bib_504 TEXT,
+  note_contents_505 TEXT,
+  subject_person_600 TEXT,
+  subject_corp_610 TEXT,
+  subject_uniform_630 TEXT,
+  subject_geo_651 TEXT,
+  subject_650_2 TEXT,
+  subject_650_3 TEXT,
+  added_corp_710 TEXT,
+  added_title_740 TEXT,
+  series_uniform_830 TEXT,
+  electronic_856 TEXT,
+  local_907 TEXT,
+  cover_image TEXT,
+  search_source TEXT,
+  marc_tags JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. ปิด RLS เพื่อให้อ่าน/เขียนจากหน้าเว็บได้โดยตรง
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+-- 3. ตั้งค่า Replica Identity เป็น FULL เพื่อให้ Realtime ส่งข้อมูลครบถ้วน
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+-- 4. เปิดใช้งาน Supabase Realtime สำหรับตาราง marc21_records
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;
+
+-- 5. สร้าง Index เพื่อเพิ่มความเร็วสูงสุดในการสืบค้นข้อมูล
+CREATE INDEX IF NOT EXISTS idx_marc21_accession ON marc21_records(accession_no);
+CREATE INDEX IF NOT EXISTS idx_marc21_isbn ON marc21_records(isbn);
+CREATE INDEX IF NOT EXISTS idx_marc21_title ON marc21_records(title_245a);
+CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DESC);`;
+                      navigator.clipboard.writeText(sqlContent);
+                      setCopiedSql(true);
+                      showToast('📋 คัดลอกคำสั่ง SQL ทั้งหมดเรียบร้อยแล้ว! นำไปวางใน Supabase SQL Editor ได้เลย');
+                      setTimeout(() => setCopiedSql(false), 3000);
+                    }}
+                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm text-xs"
+                  >
+                    {copiedSql ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>คัดลอกเรียบร้อยแล้ว!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>คัดลอกคำสั่ง SQL ทั้งหมด</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="relative bg-slate-900 text-slate-200 p-4 rounded-2xl font-mono text-[11px] max-h-56 overflow-y-auto border border-slate-800 shadow-inner">
+                  <pre className="whitespace-pre-wrap">{`-- 1. สร้างตารางจัดเก็บข้อมูลตารางทำงาน MARC 21 AI
+CREATE TABLE IF NOT EXISTS marc21_records (
+  id TEXT PRIMARY KEY,
+  db_id TEXT,
+  date TEXT,
+  col1 TEXT,
+  accession_no TEXT,
+  isbn TEXT,
+  author_personal TEXT,
+  author_corporate TEXT,
+  title_245a TEXT NOT NULL,
+  title_245b TEXT,
+  responsibility_245c TEXT,
+  ddc_082a TEXT,
+  cutter_082b TEXT,
+  pub_place TEXT,
+  publisher TEXT,
+  pub_year TEXT,
+  pages_300a TEXT,
+  illustration_300b TEXT,
+  subject_650a TEXT,
+  copies TEXT,
+  summary_520 TEXT,
+  edition_250 TEXT,
+  price_541 TEXT,
+  series_490 TEXT,
+  added_entry_700 TEXT,
+  acquisition_source TEXT,
+  col2 TEXT,
+  source_type TEXT,
+  storage_location TEXT,
+  status TEXT DEFAULT 'พร้อมให้บริการ',
+  col3 TEXT,
+  leader_000 TEXT,
+  control_001 TEXT,
+  control_003 TEXT,
+  trans_005 TEXT,
+  fixed_008 TEXT,
+  issn_022 TEXT,
+  cat_source_040 TEXT,
+  language_041 TEXT,
+  title_varying_246 TEXT,
+  dimensions_300c TEXT,
+  note_general_500 TEXT,
+  note_bib_504 TEXT,
+  note_contents_505 TEXT,
+  subject_person_600 TEXT,
+  subject_corp_610 TEXT,
+  subject_uniform_630 TEXT,
+  subject_geo_651 TEXT,
+  subject_650_2 TEXT,
+  subject_650_3 TEXT,
+  added_corp_710 TEXT,
+  added_title_740 TEXT,
+  series_uniform_830 TEXT,
+  electronic_856 TEXT,
+  local_907 TEXT,
+  cover_image TEXT,
+  search_source TEXT,
+  marc_tags JSONB DEFAULT '[]'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. ปิด RLS เพื่อให้อ่าน/เขียนจากหน้าเว็บได้โดยตรง
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+-- 3. ตั้งค่า Replica Identity เป็น FULL เพื่อให้ Realtime ส่งข้อมูลครบถ้วน
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+-- 4. เปิดใช้งาน Supabase Realtime สำหรับตาราง marc21_records
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;
+
+-- 5. สร้าง Index เพื่อเพิ่มความเร็วสูงสุดในการสืบค้นข้อมูล
+CREATE INDEX IF NOT EXISTS idx_marc21_accession ON marc21_records(accession_no);
+CREATE INDEX IF NOT EXISTS idx_marc21_isbn ON marc21_records(isbn);
+CREATE INDEX IF NOT EXISTS idx_marc21_title ON marc21_records(title_245a);
+CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DESC);`}</pre>
+                </div>
+              </div>
+
+              {/* Status Box */}
+              <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-slate-100 rounded-2xl border border-slate-200">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-slate-700">สถานะการเชื่อมต่อปัจจุบัน:</span>
+                  {isCloudRealtimeConnected ? (
+                    <span className="font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-lg border border-emerald-300 flex items-center gap-1">
+                      <Check className="w-3.5 h-3.5" /> ออนไลน์ & Realtime สมบูรณ์
+                    </span>
+                  ) : hasCloudTable === false ? (
+                    <span className="font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-lg border border-amber-300">
+                      ยังไม่พบตาราง marc21_records บน Supabase
+                    </span>
+                  ) : (
+                    <span className="font-bold text-sky-700 bg-sky-100 px-2 py-0.5 rounded-lg border border-sky-300">
+                      กำลังทดสอบเชื่อมต่อ...
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await handleSyncAllToCloud();
+                    }}
+                    disabled={isSyncingCloud}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingCloud ? 'กำลังซิงค์...' : 'ทดสอบ & ซิงค์ข้อมูลขึ้น Cloud ตอนนี้'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsCloudSetupModalOpen(false)}
+                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
+                  >
+                    ปิดหน้าต่าง
+                  </button>
+                </div>
               </div>
             </div>
           </div>
