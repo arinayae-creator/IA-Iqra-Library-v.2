@@ -1019,14 +1019,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedRlsSql, setCopiedRlsSql] = useState(false);
 
-  // Cloud Database Books Import Modal States (Pull existing books from database)
-  const [isImportBooksModalOpen, setIsImportBooksModalOpen] = useState(false);
-  const [importAccStart, setImportAccStart] = useState('0000002984');
-  const [importAccEnd, setImportAccEnd] = useState('0000003040');
-  const [importMode, setImportMode] = useState<'range' | 'recent' | 'all'>('range');
-  const [importRecentLimit, setImportRecentLimit] = useState(50);
-  const [importAppendMode, setImportAppendMode] = useState<'replace' | 'append'>('replace');
-  const [isImportingFromDb, setIsImportingFromDb] = useState(false);
 
   // Dedicated UC-TAL ThaiLIS (https://uc.thailis.or.th) Box Search States
   const [uctalKeyword, setUctalKeyword] = useState('');
@@ -1540,148 +1532,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     };
   };
 
-  // Convert Supabase 'books' row into full Marc21Record with all 29 columns and generated MARC tags
-  const bookRowToMarcRecord = (b: any): Marc21Record => {
-    const rawAcc = b.accession_no || b.barcode || '';
-    const cleanAcc = String(rawAcc).trim();
-    const cleanTitle = (b.title || '').trim();
-    const cleanAuthor = (b.author || '').trim();
-    const cleanIsbn = (b.isbn || '').trim();
-    const ddc = (b.ddc || '').trim();
-
-    // Determine cutter
-    let cutter = '';
-    if (b.call_number && b.call_number.includes(' ')) {
-      cutter = b.call_number.split(' ').slice(1).join(' ').trim();
-    } else if (cleanAuthor) {
-      try {
-        cutter = generateThaiCutter(cleanAuthor, cleanTitle);
-      } catch {
-        cutter = '';
-      }
-    }
-
-    const rec: Marc21Record = {
-      id: b.id || `book_${cleanAcc || Date.now()}`,
-      db_id: b.id,
-      date: b.created_at ? new Date(b.created_at).toLocaleDateString('th-TH') : new Date().toLocaleDateString('th-TH'),
-      col1: '',
-      accession_no: cleanAcc,
-      isbn: cleanIsbn,
-      author_personal: cleanAuthor || '-',
-      author_corporate: '-',
-      title_245a: cleanTitle,
-      title_245b: (b.subtitle || '').trim(),
-      responsibility_245c: cleanAuthor || '',
-      ddc_082a: ddc,
-      cutter_082b: cutter,
-      pub_place: b.publication_place || 'กรุงเทพฯ',
-      publisher: (b.publisher || '').trim(),
-      pub_year: (b.publication_year || '').trim(),
-      pages_300a: (b.pages || '').trim(),
-      illustration_300b: (b.illustration && !b.illustration.startsWith('http')) ? b.illustration : 'ภาพประกอบ',
-      dimensions_300c: '21 ซม.',
-      subject_650a: (b.subject || '').trim(),
-      copies: '1',
-      summary_520: (b.description || '').trim(),
-      edition_250: b.edition || 'พิมพ์ครั้งที่ 1',
-      price_541: b.price || '-',
-      series_490: b.series || '-',
-      added_entry_700: (b.co_authors && b.co_authors !== 'ผู้แปล: -') ? b.co_authors : '-',
-      acquisition_source: 'สั่งซื้อ',
-      col2: '',
-      source_type: b.source || 'ฐานข้อมูลระบบห้องสมุด',
-      storage_location: b.category || (ddc ? `หมวด ${ddc.charAt(0)}00` : 'ทั่วไป'),
-      status: b.status || 'พร้อมให้บริการ',
-      col3: '',
-      cover_image: b.cover_image || '',
-      search_source: b.source || 'ฐานข้อมูลระบบห้องสมุด (Cloud Books)'
-    };
-
-    rec.marc_tags = generateMarcTagsFromRecord(rec);
-    return rec;
-  };
-
-  // Import books from Supabase 'books' table into MARC 21 table
-  const handleImportBooksFromDb = async (customStart?: string, customEnd?: string) => {
-    setIsImportingFromDb(true);
-    setStatusMessage('กำลังดึงข้อมูลหนังสือจากระบบห้องสมุด...');
-    try {
-      let query = supabase.from('books').select('*');
-
-      const start = customStart !== undefined ? customStart : importAccStart;
-      const end = customEnd !== undefined ? customEnd : importAccEnd;
-
-      if (customStart !== undefined || importMode === 'range') {
-        const cleanStart = (start || '').trim();
-        const cleanEnd = (end || '').trim();
-        if (cleanStart) {
-          const paddedStart = !isNaN(parseInt(cleanStart, 10)) ? String(parseInt(cleanStart, 10)).padStart(10, '0') : cleanStart;
-          query = query.gte('accession_no', paddedStart);
-        }
-        if (cleanEnd) {
-          const paddedEnd = !isNaN(parseInt(cleanEnd, 10)) ? String(parseInt(cleanEnd, 10)).padStart(10, '0') : cleanEnd;
-          query = query.lte('accession_no', paddedEnd);
-        }
-        query = query.order('accession_no', { ascending: true });
-      } else if (importMode === 'recent') {
-        query = query.order('accession_no', { ascending: false }).limit(importRecentLimit);
-      } else {
-        query = query.order('accession_no', { ascending: true });
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      if (!data || data.length === 0) {
-        showToast('⚠️ ไม่พบข้อมูลหนังสือตามเงื่อนไขเลขทะเบียนที่ระบุ');
-        return;
-      }
-
-      let sortedData = data;
-      if (importMode === 'recent' && customStart === undefined) {
-        sortedData = [...data].reverse();
-      }
-
-      const importedRecords: Marc21Record[] = sortedData.map(bookRowToMarcRecord);
-
-      if (importAppendMode === 'append' && customStart === undefined) {
-        setRecords(prev => {
-          const existingIds = new Set(prev.map(r => r.id));
-          const newItems = importedRecords.filter(r => !existingIds.has(r.id));
-          const combined = [...prev, ...newItems];
-          try {
-            localStorage.setItem('iabs_marc21_records', JSON.stringify(combined));
-          } catch {}
-          return combined;
-        });
-      } else {
-        setRecords(importedRecords);
-        try {
-          localStorage.setItem('iabs_marc21_records', JSON.stringify(importedRecords));
-        } catch {}
-      }
-
-      // Update start accession number to next available number
-      const maxAcc = importedRecords.reduce((max, r) => {
-        const num = parseInt(r.accession_no, 10);
-        return !isNaN(num) && num > max ? num : max;
-      }, 2612);
-      setStartAccNum(Math.max(maxAcc + 1, 2613));
-
-      // Also backup/sync to cloud table marc21_records if available
-      syncBatchToCloud(importedRecords);
-
-      setIsImportBooksModalOpen(false);
-      showToast(`📥 ดึงข้อมูลหนังสือ ${importedRecords.length} เล่ม เข้าสู่ตาราง MARC 21 เรียบร้อยแล้ว!`);
-    } catch (err: any) {
-      console.error('Import books error:', err);
-      showToast(`⚠️ เกิดข้อผิดพลาดในการดึงข้อมูล: ${err.message || err}`);
-    } finally {
-      setIsImportingFromDb(false);
-      setStatusMessage('');
-    }
-  };
 
   // Sync single record to Supabase Cloud
   const syncRecordToCloud = async (rec: Marc21Record) => {
@@ -3502,12 +3352,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                 <span>🇹🇭 สหบรรณานุกรมสถาบันอุดมศึกษาไทย (UC-TAL / ThaiLIS)</span>
                 <ExternalLink className="w-3 h-3" />
               </a>
-              <span className="px-2.5 py-1 rounded-lg bg-white/10 text-emerald-200 border border-white/10 flex items-center gap-1">
-                <span>🌐 Google Search Grounding</span>
-              </span>
-              <span className="px-2.5 py-1 rounded-lg bg-white/10 text-emerald-200 border border-white/10 flex items-center gap-1">
-                <span>📚 TK Park OPAC & หอสมุดแห่งชาติ</span>
-              </span>
             </div>
           </div>
 
@@ -3518,28 +3362,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
             >
               <BookOpen className="w-4 h-4 text-amber-300" />
               <span>ตารางเลขคัตเตอร์ (TK, จุฬา, มอ.)</span>
-            </button>
-            <button
-              onClick={() => setIsImportBooksModalOpen(true)}
-              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2 shadow-lg shadow-indigo-950/20 cursor-pointer"
-              title="ดึงข้อมูลหนังสือที่เคยลงไว้จากเครื่องอื่น (เช่น เลขทะเบียน 0000002984 ถึง 0000003040) เข้ามาแสดงในตารางทำงาน MARC 21"
-            >
-              <Download className="w-4 h-4 text-sky-200" />
-              <span>ดึงข้อมูลจากระบบ (0000002984 - ล่าสุด)</span>
-            </button>
-            <button
-              onClick={() => setIsBatchOpen(true)}
-              className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-white/20 transition flex items-center gap-2 shadow-sm cursor-pointer"
-            >
-              <Layers className="w-4 h-4 text-emerald-300" />
-              <span>สร้างเป็นชุด (Batch)</span>
-            </button>
-            <button
-              onClick={handleAddEmptyRow}
-              className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl text-xs sm:text-sm font-semibold transition flex items-center gap-2 shadow-lg shadow-emerald-950/20 cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>เพิ่มแถวเปล่า</span>
             </button>
           </div>
         </div>
@@ -3824,87 +3646,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         )}
       </div>
 
-      {/* Cloud Cross-Device & Real-time Sync Status Control Bar */}
-      <div className="bg-gradient-to-r from-indigo-50/90 via-sky-50/90 to-emerald-50/90 border border-indigo-200/90 p-3.5 sm:p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-2xs flex items-center justify-center shrink-0">
-            <Radio className="w-4 h-4 text-emerald-300 animate-pulse" />
-          </div>
-          <div>
-            <div className="font-bold text-slate-800 text-xs sm:text-sm flex flex-wrap items-center gap-2">
-              <span>การเชื่อมต่อข้ามอุปกรณ์ & Real-time Sync</span>
-              {hasRlsError ? (
-                <span className="text-[10px] bg-rose-100 text-rose-800 border border-rose-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1.5 shadow-xs">
-                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
-                  🔴 ติดสิทธิ์ RLS บน Supabase (กดปลดล็อค 1 คลิก)
-                </span>
-              ) : isCloudRealtimeConnected ? (
-                <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1.5 shadow-xs">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-                  🟢 เชื่อมต่อ Cloud Realtime แล้ว (ซิงค์ทุกเครื่องทันที)
-                </span>
-              ) : hasCloudTable === false ? (
-                <span className="text-[10px] bg-amber-100 text-amber-900 border border-amber-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-xs">
-                  🟡 ยังไม่ได้สร้างตาราง marc21_records ใน Supabase
-                </span>
-              ) : (
-                <span className="text-[10px] bg-sky-100 text-sky-800 border border-sky-300 font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-xs">
-                  <RefreshCw className="w-3 h-3 animate-spin text-sky-600" />
-                  กำลังเชื่อมต่อ Cloud Realtime...
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              {hasRlsError
-                ? 'ตาราง marc21_records มีอยู่แล้ว แต่ติดสิทธิ์ Row Level Security (RLS) ทำให้ไม่สามารถบันทึกข้อมูลได้ กรุณากดปุ่ม "วิธีตั้งค่า SQL" เพื่อคัดลอกคำสั่งปลดล็อค'
-                : isCloudRealtimeConnected
-                ? `ทุกเครื่อง (คอมที่ 1, คอมที่ 2, มือถือ) จะเห็นข้อมูลอัปเดตตรงกันทันทีแบบ Real-time โดยไม่ต้องรีเฟรชหน้าจอ ${lastCloudSyncTime ? `(อัปเดตล่าสุด: ${lastCloudSyncTime})` : ''}`
-                : 'หากต้องการให้คอม 1 และคอม 2 เห็นข้อมูลตรงกันทันทีแบบไม่ต้องรีเฟรชหน้าจอ คลิกปุ่ม "วิธีตั้งค่า SQL" ด้านขวา'}
-            </p>
-          </div>
-        </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => loadCloudRecords()}
-            disabled={isSyncingCloud}
-            className="px-3.5 py-2 bg-white hover:bg-slate-100 border border-indigo-200 text-slate-700 font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
-            title="ดึงข้อมูลทั้งหมดที่มีอยู่ในตาราง marc21_records บน Supabase Cloud (0000000001 - เล่มล่าสุด)"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-indigo-600 ${isSyncingCloud ? 'animate-spin' : ''}`} />
-            <span>{isSyncingCloud ? 'กำลังโหลดข้อมูล...' : 'รีเฟรชจาก Cloud'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSyncAllToCloud}
-            disabled={isSyncingCloud || records.length === 0}
-            className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
-            title="อัปโหลดข้อมูลในตารางทั้งหมดขึ้น Supabase Cloud ให้ทุกเครื่องมองเห็นทันที"
-          >
-            <Cloud className="w-3.5 h-3.5" />
-            <span>{isSyncingCloud ? 'กำลังซิงค์...' : `ซิงค์ขึ้น Cloud (${records.length})`}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (hasRlsError) setCloudSqlTab('rls');
-              setIsCloudSetupModalOpen(true);
-            }}
-            className={`px-3.5 py-2 border font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs ${
-              hasRlsError
-                ? 'bg-rose-600 hover:bg-rose-500 text-white border-rose-600 animate-pulse'
-                : 'bg-white border-indigo-300 hover:bg-indigo-50 text-indigo-700'
-            }`}
-            title="คลิกเพื่อดูวิธีตั้งค่า SQL บน Supabase ให้แสดงผลทุกอุปกรณ์แบบ Real-time"
-          >
-            {hasRlsError ? <AlertTriangle className="w-3.5 h-3.5" /> : <Code className="w-3.5 h-3.5 text-indigo-600" />}
-            <span>{hasRlsError ? 'ปลดล็อคสิทธิ์ RLS (ด่วน)' : 'วิธีตั้งค่า SQL (ซิงค์ทุกเครื่อง)'}</span>
-          </button>
-        </div>
-      </div>
 
       {/* Accession Number Settings Control Bar */}
       <div className="bg-emerald-50/80 border border-emerald-200 p-3.5 sm:p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs shadow-2xs">
@@ -3975,16 +3717,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
             <span>เรียงเลขทะเบียนตารางใหม่ ({records.length})</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => handleImportBooksFromDb('0000002984', '0000003040')}
-            disabled={isImportingFromDb}
-            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold rounded-xl shadow-2xs transition cursor-pointer flex items-center gap-1.5 text-xs"
-            title="ดึงข้อมูลหนังสือช่วงเลขทะเบียน 0000002984 - 0000003040 จากฐานข้อมูลห้องสมุดมาลงตารางทันที"
-          >
-            <Database className="w-3.5 h-3.5 text-indigo-200" />
-            <span>{isImportingFromDb ? 'กำลังดึง...' : 'ดึงช่วง 0000002984 - 0000003040'}</span>
-          </button>
         </div>
       </div>
 
@@ -4044,15 +3776,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
             <Trash2 className="w-4 h-4 text-white" />
           </button>
 
-          {/* Pull books from library button */}
-          <button
-            onClick={() => setIsImportBooksModalOpen(true)}
-            className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer ml-1"
-            title="ดึงข้อมูลหนังสือที่มีอยู่แล้วในระบบห้องสมุดเข้าตาราง MARC 21"
-          >
-            <Database className="w-3.5 h-3.5 text-indigo-600" />
-            <span>ดึงหนังสือจากระบบห้องสมุด</span>
-          </button>
         </div>
 
         {/* Quick Table Search & Filter input */}
@@ -4296,34 +4019,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                     <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
                       คุณสามารถสร้างรายการใหม่ หรือดึงข้อมูลหนังสือที่มีอยู่แล้วในระบบห้องสมุดเข้ามาแสดงในตารางได้ทันที
                     </p>
-
-                    <div className="mt-5 p-4 bg-emerald-50/90 border border-emerald-200 rounded-2xl max-w-lg mx-auto text-left space-y-2.5 shadow-xs">
-                      <div className="flex items-center gap-2 text-emerald-950 font-bold text-xs sm:text-sm">
-                        <Database className="w-4 h-4 text-emerald-600 shrink-0" />
-                        <span>พบข้อมูลหนังสือในระบบห้องสมุดที่เคยลงไว้แล้ว (2,940 เล่ม)</span>
-                      </div>
-                      <p className="text-xs text-emerald-800 leading-relaxed">
-                        ต้องการดึงข้อมูลหนังสือช่วงเลขทะเบียน <strong>0000002984 ถึงล่าสุด 0000003040</strong> (58 เล่ม) ที่เคยนำเข้าจากเครื่องอื่นเข้ามาแสดงในตารางทำงานทันทีหรือไม่?
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => handleImportBooksFromDb('0000002984', '0000003040')}
-                          disabled={isImportingFromDb}
-                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                          <span>{isImportingFromDb ? 'กำลังดึงข้อมูล...' : 'ดึงช่วง 0000002984 - 0000003040 ทันที (58 เล่ม)'}</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setIsImportBooksModalOpen(true)}
-                          className="px-3.5 py-2 bg-white border border-emerald-300 hover:bg-emerald-100 text-emerald-800 font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1"
-                        >
-                          <span>เลือกช่วงอื่น...</span>
-                        </button>
-                      </div>
-                    </div>
                   </td>
                 </tr>
               ) : (
@@ -7195,250 +6890,6 @@ CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DE
         </div>
       )}
 
-      {/* MODAL: IMPORT BOOKS FROM LIBRARY DATABASE */}
-      {isImportBooksModalOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-indigo-200 overflow-hidden my-6">
-            {/* Modal Header */}
-            <div className="p-5 sm:p-6 bg-gradient-to-r from-indigo-700 via-indigo-800 to-sky-800 text-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-white/20 rounded-2xl backdrop-blur-xs">
-                  <Database className="h-6 w-6 text-white" />
-                </div>
-                <div>
-                  <h3 className="text-base sm:text-lg font-extrabold flex items-center gap-2">
-                    <span>ดึงข้อมูลหนังสือจากระบบห้องสมุด (Cloud Database)</span>
-                    <span className="text-[10px] bg-emerald-400 text-slate-950 font-black px-2 py-0.5 rounded-full uppercase tracking-wider">
-                      2,940 เล่ม
-                    </span>
-                  </h3>
-                  <p className="text-xs text-indigo-100">
-                    ดึงรายการหนังสือที่เคยลงไว้จากเครื่องอื่นมาแสดงในตารางทำงาน MARC 21 ได้ทันที
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsImportBooksModalOpen(false)}
-                className="p-1.5 hover:bg-white/20 rounded-full transition text-white/80 hover:text-white cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto text-xs text-slate-600 leading-relaxed">
-              {/* Quick Preset Buttons */}
-              <div className="space-y-2">
-                <div className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                  <span>ตัวเลือกด่วน (Quick Presets):</span>
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportMode('range');
-                      setImportAccStart('0000002984');
-                      setImportAccEnd('0000003040');
-                    }}
-                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
-                      importMode === 'range' && importAccStart === '0000002984' && importAccEnd === '0000003040'
-                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
-                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-indigo-700 flex items-center gap-1">
-                        <span>🎯 เลขทะเบียน 0000002984 - 0000003040</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">หนังสือที่ลงไว้ล่าสุด (58 เล่ม)</p>
-                    </div>
-                    <span className="text-[10px] font-bold bg-indigo-200/80 text-indigo-900 px-2 py-0.5 rounded-full shrink-0">แนะนำ</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportMode('range');
-                      setImportAccStart('0000002984');
-                      setImportAccEnd('0000003041');
-                    }}
-                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
-                      importMode === 'range' && importAccStart === '0000002984' && importAccEnd === '0000003041'
-                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
-                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-indigo-700">
-                        <span>🚀 เลข 0000002984 ถึงเล่มล่าสุด (3041)</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">รวม 59 เล่มล่าสุดในระบบ</p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportMode('recent');
-                      setImportRecentLimit(50);
-                    }}
-                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
-                      importMode === 'recent' && importRecentLimit === 50
-                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
-                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-slate-800">
-                        <span>⚡ 50 เล่มล่าสุดในระบบ</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">ดึง 50 เล่มที่มีเลขทะเบียนสูงสุด</p>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportMode('all');
-                    }}
-                    className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center justify-between gap-2 ${
-                      importMode === 'all'
-                        ? 'bg-indigo-50 border-indigo-500 text-indigo-950 ring-2 ring-indigo-500/20'
-                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-indigo-50/50'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-slate-800">
-                        <span>📚 ดึงรายการทั้งหมดในระบบ</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500 mt-0.5">หนังสือทั้งหมดประมาณ 2,940 เล่ม</p>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              {/* Custom Settings Form */}
-              <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-4">
-                <div className="font-bold text-slate-800 text-xs">กำหนดเงื่อนไขการดึงข้อมูล:</div>
-
-                {/* Range inputs */}
-                {importMode === 'range' && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                        จากเลขทะเบียน (Start Accession No.):
-                      </label>
-                      <input
-                        type="text"
-                        value={importAccStart}
-                        onChange={(e) => setImportAccStart(e.target.value)}
-                        placeholder="เช่น 0000002984 หรือ 2984"
-                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                        ถึงเลขทะเบียน (End Accession No.):
-                      </label>
-                      <input
-                        type="text"
-                        value={importAccEnd}
-                        onChange={(e) => setImportAccEnd(e.target.value)}
-                        placeholder="เช่น 0000003040 หรือ 3040"
-                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* Recent count selector */}
-                {importMode === 'recent' && (
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                      จำนวนเล่มล่าสุดที่ต้องการดึง:
-                    </label>
-                    <select
-                      value={importRecentLimit}
-                      onChange={(e) => setImportRecentLimit(parseInt(e.target.value, 10))}
-                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    >
-                      <option value={20}>20 เล่มล่าสุด</option>
-                      <option value={50}>50 เล่มล่าสุด (ค่าเริ่มต้น)</option>
-                      <option value={100}>100 เล่มล่าสุด</option>
-                      <option value={200}>200 เล่มล่าสุด</option>
-                    </select>
-                  </div>
-                )}
-
-                {/* Target table behavior */}
-                <div className="pt-2 border-t border-slate-200">
-                  <span className="block text-[11px] font-semibold text-slate-700 mb-1.5">
-                    รูปแบบการนำเข้าสู่ตารางทำงาน:
-                  </span>
-                  <div className="flex flex-wrap items-center gap-4">
-                    <label className="flex items-center gap-2 cursor-pointer text-xs">
-                      <input
-                        type="radio"
-                        name="importAppendMode"
-                        checked={importAppendMode === 'replace'}
-                        onChange={() => setImportAppendMode('replace')}
-                        className="text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span className="font-semibold text-slate-800">แทนที่ตารางปัจจุบัน (ล้างตารางเดิมออก)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer text-xs">
-                      <input
-                        type="radio"
-                        name="importAppendMode"
-                        checked={importAppendMode === 'append'}
-                        onChange={() => setImportAppendMode('append')}
-                        className="text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span className="font-semibold text-slate-800">เพิ่มต่อท้ายตารางเดิม (Append)</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {/* Information Notice */}
-              <div className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-xl flex items-start gap-2.5 text-xs text-indigo-900">
-                <Info className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-                <p>
-                  ระบบจะแปลงข้อมูลหนังสือจากระบบห้องสมุดเป็นรูปแบบตาราง <strong>MARC 21 ครบทั้ง 29 คอลัมน์</strong> พร้อมสร้างเลขคัตเตอร์, เลข DDC, และโครงสร้าง MARC Tags (Leader, 001, 008, 020, 082, 100, 245, 260, 300 ฯลฯ) ให้อัตโนมัติทุกเล่ม
-                </p>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-4 bg-slate-100 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
-              <span className="text-[11px] text-slate-500">
-                {importMode === 'range' ? `ดึงช่วง ${importAccStart || 'แรก'} ถึง ${importAccEnd || 'ล่าสุด'}` : ''}
-              </span>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsImportBooksModalOpen(false)}
-                  className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-xl text-xs transition cursor-pointer"
-                >
-                  ยกเลิก
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleImportBooksFromDb()}
-                  disabled={isImportingFromDb}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 shadow-sm"
-                >
-                  <Download className={`w-3.5 h-3.5 ${isImportingFromDb ? 'animate-bounce' : ''}`} />
-                  <span>{isImportingFromDb ? 'กำลังดึงข้อมูล...' : '📥 ยืนยันการดึงข้อมูลเข้าสู่ตาราง MARC 21'}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
