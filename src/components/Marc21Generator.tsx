@@ -43,7 +43,8 @@ import {
   CheckCircle2,
   Tag,
   Tags,
-  Bookmark
+  Bookmark,
+  Loader2
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
@@ -151,6 +152,126 @@ export const STANDARD_SUBJECT_DDC_MAPPINGS: { subject: string; ddc: string; cate
   { subject: 'ดนตรี', ddc: '780', category: '700 ศิลปะและนันทนาการ' },
   { subject: 'กีฬาและการออกกำลังกาย', ddc: '796', category: '700 ศิลปะและนันทนาการ' }
 ];
+
+/**
+ * Comprehensively extracts ALL subject headings and associated DDC from any record or book object.
+ * Guaranteed to collect every single subject heading without any limitation of 3:
+ * - Direct fields: subject_650a, subject_650_2, subject_650_3
+ * - Extra numbered fields: subject_650_4, subject_650_5, subject_4, subject_5...
+ * - Arrays/strings: all650Subjects, extraSubjects, subjects, subject, keywords
+ * - All MARC tags with tagID '650' (and subfields $a, $x, $v, $z, $y)
+ * - Properly tokenizes delimited subjects (by commas, semicolons, slashes, double hyphens, newlines, pipes)
+ */
+export function extractAllSubjectsAndDdc(r: any): { subjects: string[]; ddc: string; title: string; category?: string } {
+  if (!r) return { subjects: [], ddc: '', title: '' };
+
+  // 1. Determine DDC classification
+  let ddc = (r.ddc_082a || r.ddc || '').trim();
+  if (!ddc && r.call_number) {
+    const parts = String(r.call_number).trim().split(/\s+/);
+    if (parts.length > 0) {
+      const first = parts[0];
+      if (/^[ดยนร]/.test(first)) ddc = first.charAt(0);
+      else if (/^\d+(\.\d+)?$/.test(first)) ddc = first;
+    }
+  }
+  if (!ddc && Array.isArray(r.marc_tags)) {
+    const t082 = r.marc_tags.find((t: any) => t && (t.tagID === '082' || t.tag === '082'));
+    if (t082) {
+      const normalizedData = String(t082.data || t082.content || '').replace(/\u001f/g, '$');
+      const m = normalizedData.match(/\$a([^\$]+)/i);
+      if (m) ddc = m[1].trim();
+      else if (/^\d+(\.\d+)?$/.test(normalizedData.trim())) ddc = normalizedData.trim();
+    }
+  }
+
+  // 2. Determine Book Title
+  const title = (r.title_245a || r.title || '').trim().replace(/\s*\/\s*.*$/, '').replace(/[\.\,\:\/]+$/, '').trim();
+
+  // 3. Raw subjects collection from all potential sources in this record
+  const rawPool: string[] = [];
+
+  // (a) Direct subject fields
+  if (r.subject_650a) rawPool.push(String(r.subject_650a));
+  if (r.subject_650_2) rawPool.push(String(r.subject_650_2));
+  if (r.subject_650_3) rawPool.push(String(r.subject_650_3));
+
+  // (b) Additional numbered fields (subject_650_4, subject_650_5, subject_4, subject_5...)
+  Object.keys(r).forEach(key => {
+    if (/^subject_650_\d+$/i.test(key) || /^subject_\d+$/i.test(key)) {
+      if (key !== 'subject_650_2' && key !== 'subject_650_3' && r[key]) {
+        rawPool.push(String(r[key]));
+      }
+    }
+  });
+
+  // (c) Generic subject/subjects/all650Subjects/extraSubjects fields
+  if (r.subject) rawPool.push(String(r.subject));
+  if (r.subjects) {
+    if (Array.isArray(r.subjects)) {
+      r.subjects.forEach((s: any) => s && rawPool.push(String(s)));
+    } else {
+      rawPool.push(String(r.subjects));
+    }
+  }
+  if (Array.isArray(r.all650Subjects)) {
+    r.all650Subjects.forEach((s: any) => s && rawPool.push(String(s)));
+  }
+  if (Array.isArray(r.extraSubjects)) {
+    r.extraSubjects.forEach((s: any) => s && rawPool.push(String(s)));
+  }
+
+  // (d) Complete extraction from marc_tags (all tag 650s and all subfields $a, $x, $v, $z, $y)
+  if (Array.isArray(r.marc_tags)) {
+    r.marc_tags.forEach((t: any) => {
+      if (!t) return;
+      const tagID = String(t.tagID || t.tag || '').trim();
+      if (tagID === '650') {
+        const dataStr = String(t.data || t.content || '').trim();
+        if (dataStr) {
+          const normalized = dataStr.replace(/\u001f/g, '$');
+          if (normalized.includes('$')) {
+            const subMatches = normalized.match(/\$[axvzy][^\$]+/gi);
+            if (subMatches && subMatches.length > 0) {
+              subMatches.forEach(sm => {
+                const cleanSm = sm.replace(/^\$[axvzy]\s*/i, '').trim();
+                if (cleanSm) rawPool.push(cleanSm);
+              });
+            } else {
+              rawPool.push(normalized.replace(/[\u001f\$][a-z0-9]/gi, ' ').trim());
+            }
+          } else {
+            rawPool.push(dataStr);
+          }
+        }
+      }
+    });
+  }
+
+  // 4. Tokenize, clean, and deduplicate
+  const subjectsSet = new Set<string>();
+  const delimiterRegex = /[,;\n\r|/•·]+|(?:\s+[-—–]{1,2}\s+)|(?:\s*--\s*)/;
+
+  rawPool.forEach(item => {
+    if (!item || typeof item !== 'string') return;
+    const tokens = item.split(delimiterRegex);
+    tokens.forEach(tok => {
+      let clean = tok.trim();
+      clean = clean.replace(/[\u001f\$][a-z0-9]/gi, ' ');
+      clean = clean.replace(/^[\s\/:;=,.\-—–"'“”‘’\(\)\[\]\{\}]+/, '').replace(/[\s\/:;=,.\-—–"'“”‘’\(\)\[\]\{\}]+$/, '').trim();
+      if (clean && clean !== '-' && clean !== 'ทั่วไป' && clean.length >= 2) {
+        subjectsSet.add(clean);
+      }
+    });
+  });
+
+  return {
+    subjects: Array.from(subjectsSet),
+    ddc,
+    title,
+    category: r.category || r.storage_location || undefined
+  };
+}
 
 export function isCorporateAuthor(name: string): boolean {
   if (!name) return false;
@@ -998,6 +1119,7 @@ export const MARC21_COLUMNS = [
   { key: 'subject_uniform_630', label: '630 หัวเรื่อง - ชื่อแบบฉบับ/กลุ่มผู้อ่าน', tag: '630', width: 'w-48' },
   { key: 'subject_geo_651', label: '651 หัวเรื่อง - ชื่อภูมิศาสตร์', tag: '651', width: 'w-48' },
   { key: 'subject_650_2', label: '650 หัวเรื่อง 2', tag: '650 (2)', width: 'w-48' },
+  { key: 'subject_650_3', label: '650 หัวเรื่อง 3', tag: '650 (3)', width: 'w-48' },
   { key: 'added_corp_710', label: '710 ผู้แต่งร่วม - นิติบุคคล', tag: '710', width: 'w-48' },
   { key: 'added_title_740', label: '740 ชื่อเรื่องเกี่ยวข้อง', tag: '740', width: 'w-56' },
   { key: 'series_uniform_830', label: '830 ชื่อชุดแบบฉบับ', tag: '830', width: 'w-56' },
@@ -1131,6 +1253,10 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const [dbBooksAuthors, setDbBooksAuthors] = useState<SystemAuthorCutterItem[]>([]);
   const [isLoadingDbAuthors, setIsLoadingDbAuthors] = useState(false);
 
+  // AI Book Summary Search States (Tag 520 เรื่องย่อ)
+  const [isAiSummaryLoading, setIsAiSummaryLoading] = useState(false);
+  const [rowSummaryLoadingId, setRowSummaryLoadingId] = useState<string | null>(null);
+
   // Subject Headings & DDC Classification Modal States (Tag 650 & Tag 082 $a)
   const [isSubjectHeadingsModalOpen, setIsSubjectHeadingsModalOpen] = useState(false);
   const [subjectSearchTerm, setSubjectSearchTerm] = useState('');
@@ -1147,47 +1273,30 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       try {
         const { data, error } = await supabase
           .from('books')
-          .select('subject, category, call_number, title')
+          .select('*')
           .limit(3000);
         if (!error && Array.isArray(data) && isMounted) {
           const map = new Map<string, { ddcCounts: Map<string, number>; count: number; titles: Set<string>; cat?: string }>();
           data.forEach((b: any) => {
-            const rawSubj = (b.subject || '').trim();
-            if (rawSubj && rawSubj !== '-' && rawSubj !== 'ทั่วไป') {
-              let extractedDdc = '';
-              if (b.call_number) {
-                const parts = b.call_number.trim().split(/\s+/);
-                if (parts.length > 0) {
-                  const first = parts[0];
-                  if (first.startsWith('ด') || first.startsWith('ย') || first.startsWith('น') || first.startsWith('ร')) {
-                    extractedDdc = first.charAt(0);
-                  } else if (/^\d+(\.\d+)?$/.test(first)) {
-                    extractedDdc = first;
-                  }
-                }
+            const { subjects, ddc, title, category } = extractAllSubjectsAndDdc(b);
+            subjects.forEach((cleanSubj: string) => {
+              if (!map.has(cleanSubj)) {
+                map.set(cleanSubj, {
+                  ddcCounts: new Map(),
+                  count: 0,
+                  titles: new Set(),
+                  cat: category || b.category || undefined
+                });
               }
-
-              const subList = rawSubj.split(/[,;\n]+/).map((s: string) => s.trim().replace(/[\.\,\:\/]+$/, '')).filter(Boolean);
-              subList.forEach((cleanSubj: string) => {
-                if (!cleanSubj || cleanSubj === '-' || cleanSubj === 'ทั่วไป') return;
-                if (!map.has(cleanSubj)) {
-                  map.set(cleanSubj, {
-                    ddcCounts: new Map(),
-                    count: 0,
-                    titles: new Set(),
-                    cat: b.category || undefined
-                  });
-                }
-                const entry = map.get(cleanSubj)!;
-                entry.count++;
-                if (b.title && entry.titles.size < 3) {
-                  entry.titles.add(b.title.trim().replace(/[\.\,\:\/]+$/, ''));
-                }
-                if (extractedDdc) {
-                  entry.ddcCounts.set(extractedDdc, (entry.ddcCounts.get(extractedDdc) || 0) + 1);
-                }
-              });
-            }
+              const entry = map.get(cleanSubj)!;
+              entry.count++;
+              if (title && entry.titles.size < 5) {
+                entry.titles.add(title);
+              }
+              if (ddc) {
+                entry.ddcCounts.set(ddc, (entry.ddcCounts.get(ddc) || 0) + 1);
+              }
+            });
           });
 
           const items: SystemSubjectDdcItem[] = Array.from(map.entries()).map(([subj, val], idx) => {
@@ -1449,27 +1558,12 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     });
 
     // 3. Current active MARC records (including all records from Supabase marc21_records)
+    // Comprehensively collects EVERY subject heading from records, even if > 3 subjects per record
     records.forEach(r => {
-      const ddc = (r.ddc_082a || '').trim();
-      const title = (r.title_245a || '').trim();
-
-      if (r.subject_650a) {
-        r.subject_650a.split(/[,;\n]+/).forEach(p => addSubjDdc(p, ddc, title));
-      }
-      if (r.subject_650_2) {
-        r.subject_650_2.split(/[,;\n]+/).forEach(p => addSubjDdc(p, ddc, title));
-      }
-      if (r.subject_650_3) {
-        r.subject_650_3.split(/[,;\n]+/).forEach(p => addSubjDdc(p, ddc, title));
-      }
-      if (Array.isArray(r.marc_tags)) {
-        r.marc_tags.forEach((tag: any) => {
-          if (tag.tagID === '650' || tag.tag === '650') {
-            const parsed = parseMarcSubfield(tag.data || '', 'a') || tag.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
-            if (parsed) addSubjDdc(parsed, ddc, title);
-          }
-        });
-      }
+      const { subjects, ddc, title, category } = extractAllSubjectsAndDdc(r);
+      subjects.forEach(subj => {
+        addSubjDdc(subj, ddc, title, 'ระบบบรรณานุกรม (MARC 21)', category);
+      });
     });
 
     const list: SystemSubjectDdcItem[] = Array.from(map.values()).map((val, idx) => {
@@ -1517,19 +1611,13 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const allAvailableSubjects = React.useMemo(() => {
     const set = new Set<string>(DEFAULT_SUBJECT_HEADINGS);
     
-    // 1. Collect from current table records
+    // 1. Collect from all system subjects (already aggregated from db, records, and standards)
+    allSystemSubjects.forEach(item => set.add(item.subject));
+
+    // 2. Collect from current table records using extractAllSubjectsAndDdc
     records.forEach(r => {
-      if (r.subject_650a && r.subject_650a !== '-' && r.subject_650a !== 'ทั่วไป') set.add(r.subject_650a.trim());
-      if (r.subject_650_2 && r.subject_650_2 !== '-' && r.subject_650_2 !== 'ทั่วไป') set.add(r.subject_650_2.trim());
-      if (r.subject_650_3 && r.subject_650_3 !== '-' && r.subject_650_3 !== 'ทั่วไป') set.add(r.subject_650_3.trim());
-      if (Array.isArray(r.marc_tags)) {
-        r.marc_tags.forEach((tag: any) => {
-          if (tag.tagID === '650' || tag.tag === '650') {
-            const parsed = parseMarcSubfield(tag.data || '', 'a') || tag.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim();
-            if (parsed && parsed !== '-' && parsed !== 'ทั่วไป') set.add(parsed.replace(/[\.\,\:\/]+$/, '').trim());
-          }
-        });
-      }
+      const { subjects } = extractAllSubjectsAndDdc(r);
+      subjects.forEach(s => set.add(s));
     });
 
     // 2. Collect from searched results (UC-TAL / Live search)
@@ -2775,6 +2863,30 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       item.title_varying_246 || item.varyingTitle || ''
     );
 
+    // Extract Tag 020 $c for field 541 (ราคา) as requested
+    let priceFrom020 = '';
+    const t020Items = (rawMarcList || []).filter(t => t.tagID === '020');
+    for (const t of t020Items) {
+      const c = parseMarcSubfield(t.data, 'c');
+      if (c) {
+        priceFrom020 = c.replace(/^[\s:;=,-]+/, '').replace(/[\s:;=,-]+$/, '').replace(/\.$/, '').trim();
+        if (priceFrom020) break;
+      }
+    }
+    const finalPrice541 = priceFrom020 || item.price_541 || item.price || '-';
+    if (finalPrice541 && finalPrice541 !== '-') {
+      const formattedPriceStr = finalPrice541.includes('บาท') || finalPrice541.includes('บ.') ? finalPrice541 : `${finalPrice541} บาท`;
+      const idx541 = rawMarcList.findIndex(t => t.tagID === '541');
+      if (idx541 >= 0) {
+        rawMarcList[idx541].data = `$c${formattedPriceStr}`;
+      } else {
+        const insIdx = rawMarcList.findIndex(t => parseInt(t.tagID, 10) >= 600);
+        const tag541Obj = { tagID: '541', indc1: '', indc2: '', data: `$c${formattedPriceStr}` };
+        if (insIdx >= 0) rawMarcList.splice(insIdx, 0, tag541Obj);
+        else rawMarcList.push(tag541Obj);
+      }
+    }
+
     const newRecord: Marc21Record = {
       id: `uctal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       date: new Date().toLocaleDateString('th-TH'),
@@ -2797,7 +2909,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       copies: '1',
       summary_520: item.summary || item.summary_520 || `หนังสือ "${item.title || item.title_245a}" จากฐานข้อมูลสหบรรณานุกรมสถาบันอุดมศึกษาไทย (UC-TAL)`,
       edition_250: item.edition_250 || 'พิมพ์ครั้งที่ 1',
-      price_541: item.price_541 || '-',
+      price_541: finalPrice541,
       series_490: item.series || item.series_490 || '-',
       added_entry_700: item.added_entry_700 || '-',
       acquisition_source: institutionName ? `สหบรรณานุกรม UC-TAL (${institutionSymbol})` : 'สั่งซื้อ',
@@ -3129,42 +3241,120 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     }).join('\t');
   };
 
-  // Open edit modal with all 3 650 subjects extracted from record or marc_tags
-  const handleStartEdit = (r: Marc21Record) => {
-    const extractedSubs: string[] = [];
-    const addSub = (val?: string) => {
-      if (!val || typeof val !== 'string') return;
-      let clean = val.trim();
-      if (clean.startsWith('$a') || clean.startsWith('\\a')) {
-        clean = clean.substring(2).trim();
-      }
-      clean = clean.replace(/[\u001f\$][a-z0-9]/g, ' ').replace(/^[\s\/:;=,-]+/, '').replace(/[\s\/:;=,-]+$/, '').trim();
-      if (clean && clean !== '-' && clean !== 'ทั่วไป' && !extractedSubs.includes(clean)) {
-        extractedSubs.push(clean);
-      }
-    };
+  // Dedicated AI Book Summary Search (Tag 520 เรื่องย่อ) from Book Title
+  const handleFetchAiSummary = async (options: {
+    title: string;
+    author?: string;
+    isbn?: string;
+    target: 'modal' | 'row';
+    rowId?: string;
+  }) => {
+    const { title, author = '', isbn = '', target, rowId } = options;
+    const cleanTitle = (title || '').split('/')[0].split('=')[0].replace(/[\/:]\s*$/, '').trim();
+    if (!cleanTitle) {
+      showToast('⚠️ กรุณาระบุชื่อหนังสือเพื่อค้นหาเรื่องย่อด้วย AI');
+      return;
+    }
 
-    if (Array.isArray(r.marc_tags)) {
-      r.marc_tags.forEach((t: any) => {
-        if (t && (t.tagID === '650' || t.tag === '650')) {
-          const parsed = parseMarcSubfield(t.data || t.content || '', 'a') || (t.data || t.content || '').replace(/[\u001f\$][a-z0-9]/g, ' ').trim();
-          addSub(parsed);
-        }
+    if (target === 'modal') {
+      setIsAiSummaryLoading(true);
+    } else if (rowId) {
+      setRowSummaryLoadingId(rowId);
+    }
+
+    try {
+      const res = await fetch('/api/search-book-summary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: cleanTitle,
+          author: author && author !== '-' ? author : '',
+          isbn: isbn || ''
+        })
       });
-    }
 
-    if (r.subject_650a) {
-      r.subject_650a.split(/[,;\n]+/).forEach(s => addSub(s));
-    }
-    if ((r as any).subject) {
-      String((r as any).subject).split(/[,;\n]+/).forEach(s => addSub(s));
-    }
-    addSub(r.subject_650_2);
-    addSub(r.subject_650_3);
+      if (!res.ok) {
+        throw new Error(`HTTP error ${res.status}`);
+      }
 
-    const s1 = extractedSubs[0] || (r.subject_650a && r.subject_650a !== '-' ? r.subject_650a : '') || '';
-    const s2 = extractedSubs[1] || (r.subject_650_2 && r.subject_650_2 !== '-' ? r.subject_650_2 : '') || '';
-    const s3 = extractedSubs[2] || (r.subject_650_3 && r.subject_650_3 !== '-' ? r.subject_650_3 : '') || '';
+      const data = await res.json();
+      if (data.success && data.summary) {
+        const generatedSummary = data.summary.trim();
+
+        if (target === 'modal') {
+          setEditingRecord(prev => {
+            if (!prev) return null;
+            let updatedTags = Array.isArray(prev.marc_tags) ? [...prev.marc_tags] : [];
+            const idx520 = updatedTags.findIndex(t => t.tagID === '520' || (t as any).tag === '520');
+            if (idx520 >= 0) {
+              updatedTags[idx520] = { ...updatedTags[idx520], data: `$a${generatedSummary}` };
+            } else {
+              const insIdx = updatedTags.findIndex(t => parseInt(t.tagID || (t as any).tag, 10) >= 600);
+              const tag520 = { tagID: '520', indc1: '', indc2: '', data: `$a${generatedSummary}` };
+              if (insIdx >= 0) updatedTags.splice(insIdx, 0, tag520);
+              else updatedTags.push(tag520);
+            }
+            return {
+              ...prev,
+              summary_520: generatedSummary,
+              marc_tags: updatedTags
+            };
+          });
+          showToast('✨ AI ค้นหาและบันทึกเรื่องย่อเรียบร้อยแล้ว');
+        } else if (target === 'row' && rowId) {
+          setRecords(prev => prev.map(rec => {
+            if (rec.id === rowId) {
+              let updatedTags = Array.isArray(rec.marc_tags) ? [...rec.marc_tags] : [];
+              const idx520 = updatedTags.findIndex(t => t.tagID === '520' || (t as any).tag === '520');
+              if (idx520 >= 0) {
+                updatedTags[idx520] = { ...updatedTags[idx520], data: `$a${generatedSummary}` };
+              } else {
+                const insIdx = updatedTags.findIndex(t => parseInt(t.tagID || (t as any).tag, 10) >= 600);
+                const tag520 = { tagID: '520', indc1: '', indc2: '', data: `$a${generatedSummary}` };
+                if (insIdx >= 0) updatedTags.splice(insIdx, 0, tag520);
+                else updatedTags.push(tag520);
+              }
+              return {
+                ...rec,
+                summary_520: generatedSummary,
+                marc_tags: updatedTags
+              };
+            }
+            return rec;
+          }));
+
+          // Background sync to database
+          try {
+            await supabase
+              .from('marc21_records')
+              .update({ summary_520: generatedSummary, updated_at: new Date().toISOString() })
+              .eq('id', rowId);
+          } catch {}
+
+          showToast('✨ AI ดึงเรื่องย่อลงตารางสำเร็จ');
+        }
+      } else {
+        showToast(`⚠️ ${data.error || 'ไม่พบเรื่องย่อของหนังสือเล่มนี้'}`);
+      }
+    } catch (err: any) {
+      console.error('[AI Summary Search Error]:', err);
+      showToast('⚠️ เกิดข้อผิดพลาดในการเชื่อมต่อบริการ AI ค้นหาเรื่องย่อ');
+    } finally {
+      if (target === 'modal') {
+        setIsAiSummaryLoading(false);
+      } else {
+        setRowSummaryLoadingId(null);
+      }
+    }
+  };
+
+  // Open edit modal with ALL 650 subjects extracted from record or marc_tags (no limit of 3)
+  const handleStartEdit = (r: Marc21Record) => {
+    const { subjects } = extractAllSubjectsAndDdc(r);
+    const s1 = subjects[0] || (r.subject_650a && r.subject_650a !== '-' ? r.subject_650a : '') || '';
+    const s2 = subjects[1] || (r.subject_650_2 && r.subject_650_2 !== '-' ? r.subject_650_2 : '') || '';
+    const s3 = subjects[2] || (r.subject_650_3 && r.subject_650_3 !== '-' ? r.subject_650_3 : '') || '';
+    const extra = subjects.slice(3);
 
     setEditModalTab('card');
     setEditingRecord({
@@ -3172,6 +3362,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       subject_650a: s1,
       subject_650_2: s2,
       subject_650_3: s3,
+      extraSubjects: extra,
     });
   };
 
@@ -3297,29 +3488,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
     r.db_id = targetBookId;
 
-    // Extract all subject headings across 650 fields and marc_tags
-    const all650s: string[] = [];
-    const addS = (val?: string) => {
-      if (!val || typeof val !== 'string') return;
-      let clean = val.trim();
-      if (clean.startsWith('$a') || clean.startsWith('\\a')) clean = clean.substring(2).trim();
-      clean = clean.replace(/[\u001f\$][a-z0-9]/g, ' ').replace(/^[\s\/:;=,-]+/, '').replace(/[\s\/:;=,-]+$/, '').trim();
-      if (clean && clean !== '-' && clean !== 'ทั่วไป' && !all650s.includes(clean)) {
-        all650s.push(clean);
-      }
-    };
-    if (r.subject_650a) r.subject_650a.split(/[,;\n]+/).forEach(addS);
-    if ((r as any).subject) String((r as any).subject).split(/[,;\n]+/).forEach(addS);
-    addS(r.subject_650_2);
-    addS(r.subject_650_3);
-    if (Array.isArray(r.marc_tags)) {
-      r.marc_tags.forEach((t: any) => {
-        if (t && (t.tagID === '650' || t.tag === '650')) {
-          const parsed = parseMarcSubfield(t.data || t.content || '', 'a') || (t.data || t.content || '').replace(/[\u001f\$][a-z0-9]/g, ' ').trim();
-          addS(parsed);
-        }
-      });
-    }
+    // Extract all subject headings across all sources without limitation
+    const { subjects: allExtracted650s } = extractAllSubjectsAndDdc(r);
+    const all650s: string[] = allExtracted650s;
 
     const combinedSubject = all650s.length > 0 ? all650s.join(' ; ') : (r.subject_650a || 'ทั่วไป');
     const s1 = all650s[0] || (r.subject_650a && r.subject_650a !== '-' ? r.subject_650a : '') || '';
@@ -3857,6 +4028,11 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                         {item.ddc && item.ddc !== '000' && (
                           <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono">
                             DDC: {item.ddc}
+                          </span>
+                        )}
+                        {item.price_541 && item.price_541 !== '-' && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 font-mono font-medium">
+                            💰 541 ราคา: {item.price_541}
                           </span>
                         )}
                         <span className="px-1.5 py-0.5 rounded bg-amber-950/80 text-amber-300 font-bold">
@@ -4535,8 +4711,34 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                         })()}
                       </td>
                       <td className="p-2.5 text-center font-mono">{r.copies}</td>
-                      <td className="p-2.5 text-slate-600 max-w-md truncate" title={r.summary_520}>
-                        {r.summary_520}
+                      <td className="p-2.5 text-slate-600 max-w-md">
+                        <div className="flex items-center justify-between gap-1.5 min-w-[180px]">
+                          <span className="truncate flex-1 text-xs" title={r.summary_520 || 'ยังไม่มีเรื่องย่อ'}>
+                            {r.summary_520 || <span className="text-slate-400 italic text-[11px]">- ไม่มีเรื่องย่อ -</span>}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleFetchAiSummary({
+                              title: r.title_245a || '',
+                              author: r.author_personal || '',
+                              isbn: r.isbn || '',
+                              target: 'row',
+                              rowId: r.id
+                            })}
+                            disabled={rowSummaryLoadingId === r.id}
+                            title="ค้นหาสภาพรวมของหนังสือจากแหล่งต่างๆ บนอินเทอร์เน็ต แล้วสรุปเนื้อหาโดยสังเขปลงใน Tag 520 เรื่องย่อด้วย AI"
+                            className="shrink-0 px-2 py-0.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 active:scale-95 text-indigo-700 border border-indigo-200 transition cursor-pointer flex items-center gap-1 text-[11px] font-semibold"
+                          >
+                            {rowSummaryLoadingId === r.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />
+                            ) : (
+                              <>
+                                <Sparkles className="w-3 h-3 text-amber-500" />
+                                <span>AI</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </td>
                       <td className="p-1.5 min-w-[140px]">
                         <select
@@ -5546,13 +5748,42 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
               {/* 520 เรื่องย่อ */}
               <div className="sm:col-span-2 md:col-span-3">
-                <label className="block font-semibold text-slate-700 mb-1">520 เรื่องย่อ</label>
+                <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <label className="block font-semibold text-slate-700">520 เรื่องย่อ</label>
+                    <span className="text-[11px] px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-medium">Tag 520 $a</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleFetchAiSummary({
+                      title: editingRecord.title_245a || '',
+                      author: editingRecord.author_personal || '',
+                      isbn: editingRecord.isbn || '',
+                      target: 'modal'
+                    })}
+                    disabled={isAiSummaryLoading || !editingRecord.title_245a?.trim()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 active:scale-95 text-white text-xs font-bold shadow-xs transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="ค้นหาสภาพรวมของหนังสือจากแหล่งต่างๆ บนอินเทอร์เน็ต แล้วสรุปเนื้อหาโดยสังเขปลงใน Tag 520 เรื่องย่อด้วย AI"
+                  >
+                    {isAiSummaryLoading ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-300" />
+                        <span>กำลังค้นหาสภาพรวมและสรุปเรื่องย่อด้วย AI...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
+                        <span>AI ค้นหาเรื่องย่อจากชื่อหนังสือ</span>
+                      </>
+                    )}
+                  </button>
+                </div>
                 <textarea
                   value={editingRecord.summary_520 || ''}
                   onChange={(e) => setEditingRecord({ ...editingRecord, summary_520: e.target.value })}
-                  rows={2}
-                  placeholder="พิมพ์เรื่องย่อ..."
-                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500"
+                  rows={3}
+                  placeholder="พิมพ์เรื่องย่อ หรือกดปุ่ม 'AI ค้นหาเรื่องย่อจากชื่อหนังสือ' เพื่อดึงเรื่องย่อจาก AI อัตโนมัติ..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 text-sm leading-relaxed"
                 />
               </div>
 
@@ -5578,13 +5809,13 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                         .map((t: any) => parseMarcSubfield(t.data || '', 'a') || t.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim())
                         .filter((s): s is string => Boolean(s && s !== '-'))
                     : [];
-                  const uniqueMarc650s: string[] = Array.from(new Set([...recordMarc650s, editingRecord.subject_650_2, editingRecord.subject_650_3].filter((s): s is string => Boolean(s && s !== '-'))));
+                  const uniqueMarc650s: string[] = extractAllSubjectsAndDdc(editingRecord).subjects;
 
                   return (
                     <div className="space-y-1.5">
                       {uniqueMarc650s.length > 0 && (
                         <div className="flex flex-wrap gap-1 items-center">
-                          <span className="text-[10px] text-slate-500 font-medium">ใน MARC:</span>
+                          <span className="text-[10px] text-slate-500 font-medium">หัวเรื่องทั้งหมด ({uniqueMarc650s.length}):</span>
                           {uniqueMarc650s.map((subj, idx) => (
                             <button
                               key={`emarc_${idx}`}
@@ -5638,6 +5869,55 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   placeholder="ระบุหัวเรื่องที่ 3 (ถ้ามี)..."
                   className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
                 />
+              </div>
+
+              {/* หัวเรื่องที่ 4 ขึ้นไป (หากรายการมีมากกว่า 3 หัวเรื่อง) */}
+              {Array.isArray((editingRecord as any).extraSubjects) && (editingRecord as any).extraSubjects.map((extraVal: string, extraIdx: number) => (
+                <div key={`extra_subj_${extraIdx}`} className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="block font-semibold text-slate-700 text-xs">
+                      650 หัวเรื่อง {extraIdx + 4}
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newExtras = [...((editingRecord as any).extraSubjects || [])];
+                        newExtras.splice(extraIdx, 1);
+                        setEditingRecord({ ...editingRecord, extraSubjects: newExtras });
+                      }}
+                      className="text-[11px] text-red-500 hover:text-red-700 font-semibold cursor-pointer"
+                    >
+                      ลบหัวเรื่องนี้
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    list="subject-headings-list"
+                    value={extraVal || ''}
+                    onChange={(e) => {
+                      const newExtras = [...((editingRecord as any).extraSubjects || [])];
+                      newExtras[extraIdx] = e.target.value;
+                      setEditingRecord({ ...editingRecord, extraSubjects: newExtras });
+                    }}
+                    placeholder={`ระบุหัวเรื่องที่ ${extraIdx + 4}...`}
+                    className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              ))}
+
+              <div className="pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentExtras = Array.isArray((editingRecord as any).extraSubjects) ? [...(editingRecord as any).extraSubjects] : [];
+                    currentExtras.push('');
+                    setEditingRecord({ ...editingRecord, extraSubjects: currentExtras });
+                  }}
+                  className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold rounded-xl border border-emerald-200 transition flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>เพิ่มหัวเรื่อง (650) เพิ่มเติม</span>
+                </button>
               </div>
 
               {/* Datalist for Subject Headings */}
@@ -5933,24 +6213,40 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                     if (idx505 >= 0) updatedTags[idx505] = tagObj;
                     else updatedTags.push(tagObj);
                   }
-                  // Update all 650 subject tags cleanly
+                  // Update all 650 subject tags cleanly (supports all subjects without limit of 3)
                   updatedTags = updatedTags.filter(t => t.tagID !== '650' && (t as any).tag !== '650');
+                  const allSubsToSave: string[] = [];
                   if (editingRecord.subject_650a && editingRecord.subject_650a !== '-' && editingRecord.subject_650a !== 'ทั่วไป') {
-                    updatedTags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${editingRecord.subject_650a}` });
+                    allSubsToSave.push(editingRecord.subject_650a.trim());
                   }
                   if (editingRecord.subject_650_2 && editingRecord.subject_650_2 !== '-' && editingRecord.subject_650_2 !== 'ทั่วไป') {
-                    updatedTags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${editingRecord.subject_650_2}` });
+                    allSubsToSave.push(editingRecord.subject_650_2.trim());
                   }
                   if (editingRecord.subject_650_3 && editingRecord.subject_650_3 !== '-' && editingRecord.subject_650_3 !== 'ทั่วไป') {
-                    updatedTags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${editingRecord.subject_650_3}` });
+                    allSubsToSave.push(editingRecord.subject_650_3.trim());
                   }
+                  if (Array.isArray((editingRecord as any).extraSubjects)) {
+                    (editingRecord as any).extraSubjects.forEach((s: string) => {
+                      const clean = (s || '').trim();
+                      if (clean && clean !== '-' && clean !== 'ทั่วไป' && !allSubsToSave.includes(clean)) {
+                        allSubsToSave.push(clean);
+                      }
+                    });
+                  }
+                  allSubsToSave.forEach(subj => {
+                    updatedTags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${subj}` });
+                  });
                   if (editingRecord.cover_image && editingRecord.cover_image !== '-') {
                     const idx856 = updatedTags.findIndex(t => t.tagID === '856' || (t as any).tag === '856');
                     const tagObj = { tagID: '856', indc1: '4', indc2: '2', data: `$u${editingRecord.cover_image}` };
                     if (idx856 >= 0) updatedTags[idx856] = tagObj;
                     else updatedTags.push(tagObj);
                   }
-                  const finalRec = { ...editingRecord, marc_tags: updatedTags };
+                  const finalRec = {
+                    ...editingRecord,
+                    all650Subjects: allSubsToSave,
+                    marc_tags: updatedTags
+                  };
                   setRecords(prev => prev.map(item => item.id === finalRec.id ? finalRec : item));
                   await handleSyncToLibrary(finalRec);
                   syncRecordToCloud(finalRec);
@@ -6442,7 +6738,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                     </span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    ความสัมพันธ์ระหว่างหัวเรื่อง (Subject Headings) กับเลขหมู่หนังสือ DDC ในระบบ เพื่อความสะดวกและเป็นมาตรฐานในการกำหนดหมวดหมู่
+                    รวบรวมทุกหัวเรื่องทั้งหมดในระบบ (รายการที่มีมากกว่า 3 หัวเรื่อง จะรวบรวมครบทั้งหมด) พร้อมระบุเลขหมู่ DDC ที่สอดคล้อง เพื่อความสะดวกและเป็นมาตรฐานในการกำหนดหมวดหมู่
                   </p>
                 </div>
               </div>
@@ -6638,7 +6934,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
             {/* Modal Footer */}
             <div className="flex items-center justify-between pt-2 border-t border-slate-100">
               <span className="text-xs text-slate-500">
-                รวมหัวเรื่องทั้งหมดในระบบ: <strong className="text-emerald-700 font-bold">{allSystemSubjects.length}</strong> รายการ
+                รวมหัวเรื่องทั้งหมดในระบบ: <strong className="text-emerald-700 font-bold">{allSystemSubjects.length.toLocaleString()}</strong> รายการ (รวบรวมครบทุกหัวเรื่อง ไม่จำกัดจำนวน)
               </span>
               <button
                 type="button"

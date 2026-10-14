@@ -70,6 +70,9 @@ export interface Marc21Record {
   subject_geo_651?: string;
   subject_650_2?: string;
   subject_650_3?: string;
+  subject_650_4?: string;
+  extraSubjects?: string[];
+  all650Subjects?: string[];
   added_corp_710?: string;
   added_title_740?: string;
   series_uniform_830?: string;
@@ -79,6 +82,7 @@ export interface Marc21Record {
   cover_image?: string;
   search_source?: string;
   marc_tags?: MarcTagItem[];
+  [key: string]: any;
 }
 
 // Official Thai Author Cutter Table Standard (ตารางการให้เลขคัตเตอร์ผู้แต่งภาษาไทย: TK Park, จุฬาฯ, มอ. - สูตรมาตรฐานเลข 4 หลัก)
@@ -334,6 +338,25 @@ export function generateMarcTagsFromRecord(r: Marc21Record): MarcTagItem[] {
   if (r.subject_650_3 && r.subject_650_3 !== '-') {
     tags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${r.subject_650_3}` });
   }
+  if (Array.isArray(r.extraSubjects)) {
+    r.extraSubjects.forEach((s: string) => {
+      if (s && s !== '-' && s !== 'ทั่วไป') {
+        tags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${s}` });
+      }
+    });
+  }
+  if (Array.isArray(r.all650Subjects)) {
+    r.all650Subjects.slice(3).forEach((s: string) => {
+      if (s && s !== '-' && s !== 'ทั่วไป') {
+        tags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${s}` });
+      }
+    });
+  }
+  Object.keys(r).forEach(k => {
+    if (/^subject_650_([4-9]|\d{2,})$/i.test(k) && r[k] && r[k] !== '-' && r[k] !== 'ทั่วไป') {
+      tags.push({ tagID: '650', indc1: '', indc2: '4', data: `$a${r[k]}` });
+    }
+  });
   if (r.subject_geo_651 && r.subject_geo_651 !== '-') {
     tags.push({ tagID: '651', indc1: '', indc2: '4', data: `$a${r.subject_geo_651}` });
   }
@@ -672,7 +695,7 @@ ISBN: "${isbn}"
 
         try {
           const aiRes = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.8-flash',
             contents: prompt,
             config: {
               tools: [{ googleSearch: {} }]
@@ -754,7 +777,7 @@ ISBN: "${isbn}"
 
         try {
           const aiRes = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-3.8-flash',
             contents: prompt,
             config: {
               tools: [{ googleSearch: {} }]
@@ -1024,13 +1047,36 @@ async function searchThaiLISUCTAL(keyword: string): Promise<any> {
           }
         }
 
-        // 4. Retrieve precise retail price from the Internet (SE-ED, Naiin, Chulabook, Google) to override/fill MARC price for maximum accuracy
-        let price541 = await fetchInternetPrice(rawTitle245a, author100, isbn020);
-        if (!price541 || price541 === '-' || price541.trim() === '') {
-          price541 = parseMarcSubfield(getRawData('020'), 'c') || parseMarcSubfield(getRawData('541'), 'c') || parseMarcSubfield(getRawData('541'), 'h') || '165 บาท';
+        // 4. Retrieve price from Tag 020 $c in MARC UC-TAL Search directly as requested
+        let tag020cPrice = '';
+        const tag020List = marcRecords.filter(r => r.tagID === '020');
+        for (const t020 of tag020List) {
+          if (t020.data) {
+            const rawC = parseMarcSubfield(t020.data, 'c');
+            if (rawC) {
+              const cleaned = rawC.replace(/^[\s:;=,-]+/, '').replace(/[\s:;=,-]+$/, '').replace(/\.$/, '').trim();
+              if (cleaned) {
+                tag020cPrice = cleaned;
+                break;
+              }
+            }
+          }
         }
-        if (price541 && !price541.includes('บาท') && !price541.includes('บ.')) {
-          price541 = `${price541} บาท`;
+
+        let price541 = tag020cPrice;
+        if (!price541 || price541 === '-' || price541.trim() === '') {
+          const tag541InMarc = parseMarcSubfield(getRawData('541'), 'c') || parseMarcSubfield(getRawData('541'), 'h');
+          if (tag541InMarc) {
+            price541 = tag541InMarc.replace(/^[\s:;=,-]+/, '').replace(/[\s:;=,-]+$/, '').replace(/\.$/, '').trim();
+          } else {
+            price541 = await fetchInternetPrice(rawTitle245a, author100, isbn020);
+          }
+        }
+        if (price541 && !price541.includes('บาท') && !price541.includes('บ.') && !price541.toLowerCase().includes('baht')) {
+          const numMatch = price541.match(/^[0-9,.]+/);
+          if (numMatch) {
+            price541 = `${price541} บาท`;
+          }
         }
 
         // Update Tag 541 in marcRecords if it exists, or insert a new one

@@ -147,7 +147,7 @@ ISBN: "${cleanIsbn || isbn}"
 }`;
 
       const aiRes = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.8-flash',
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }]
@@ -506,14 +506,39 @@ export default async function handler(req: any, res: any) {
         }
       }
 
-      // 4. Retrieve precise retail price from the Internet (SE-ED, Naiin, Chulabook, Google) to override/fill MARC price for maximum accuracy
-      const internetData = await fetchInternetBookMetadata(rawTitle245a, author100, isbn020, series490);
-      let price541 = internetData.price;
-      if (!price541 || price541 === '-' || price541.trim() === '') {
-        price541 = parseMarcSubfield(getRawData('020'), 'c') || parseMarcSubfield(getRawData('541'), 'c') || parseMarcSubfield(getRawData('541'), 'h') || '165 บาท';
+      // 4. Retrieve price from Tag 020 $c in MARC UC-TAL Search directly as requested
+      let tag020cPrice = '';
+      const tag020List = marcRecords.filter((r: any) => r.tagID === '020' || r.tag === '020');
+      for (const t020 of tag020List) {
+        if (t020.data) {
+          const rawC = parseMarcSubfield(t020.data, 'c');
+          if (rawC) {
+            const cleaned = rawC.replace(/^[\s:;=,-]+/, '').replace(/[\s:;=,-]+$/, '').replace(/\.$/, '').trim();
+            if (cleaned) {
+              tag020cPrice = cleaned;
+              break;
+            }
+          }
+        }
       }
-      if (price541 && !price541.includes('บาท') && !price541.includes('บ.')) {
-        price541 = `${price541} บาท`;
+
+      // Fetch internet metadata for synopsis and fallback price
+      const internetData = await fetchInternetBookMetadata(rawTitle245a, author100, isbn020, series490);
+
+      let price541 = tag020cPrice;
+      if (!price541 || price541 === '-' || price541.trim() === '') {
+        const tag541InMarc = parseMarcSubfield(getRawData('541'), 'c') || parseMarcSubfield(getRawData('541'), 'h');
+        if (tag541InMarc) {
+          price541 = tag541InMarc.replace(/^[\s:;=,-]+/, '').replace(/[\s:;=,-]+$/, '').replace(/\.$/, '').trim();
+        } else {
+          price541 = internetData?.price || '165 บาท';
+        }
+      }
+      if (price541 && !price541.includes('บาท') && !price541.includes('บ.') && !price541.toLowerCase().includes('baht')) {
+        const numMatch = price541.match(/^[0-9,.]+/);
+        if (numMatch) {
+          price541 = `${price541} บาท`;
+        }
       }
 
       // Update or insert Tag 541 in marcRecords
