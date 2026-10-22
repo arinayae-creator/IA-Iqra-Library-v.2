@@ -1898,6 +1898,38 @@ export default function App() {
             }
           }
 
+          // Sync to marc21_records so bibliographic data in MARC 21 page stays 100% consistent!
+          try {
+            const rawAcc = editingBook.accession_no || editingBook.barcode || '';
+            const accFormatted = formatAccessionNo(rawAcc);
+            const marcUpdate: any = {
+              title_245a: editingBook.title,
+              author_personal: editingBook.author,
+              isbn: editingBook.isbn || null,
+              publisher: editingBook.publisher || null,
+              pub_place: editingBook.publication_place || null,
+              pub_year: editingBook.publication_year || null,
+              pages_300a: editingBook.pages || null,
+              ddc_082a: editingBook.ddc || null,
+              cutter_082b: editingBook.call_sub || null,
+              status: editingBook.status || 'พร้อมให้บริการ',
+              subject_650a: editingBook.subject || null,
+              subject_650_2: editingBook.subject_2 || null,
+              subject_650_3: editingBook.subject_3 || null,
+              summary_520: editingBook.description || null,
+              edition_250: editingBook.edition || null,
+              cover_image: editingBook.cover_image || null,
+              updated_at: updatedPayload.updated_at
+            };
+            if (accFormatted) {
+              await supabase.from('marc21_records').update(marcUpdate).eq('accession_no', accFormatted);
+            } else {
+              await supabase.from('marc21_records').update(marcUpdate).eq('id', editingBook.id);
+            }
+          } catch (mErr) {
+            console.warn('[Sync to marc21_records note]:', mErr);
+          }
+
           updatedViaApi = true;
         }
       }
@@ -1933,6 +1965,9 @@ export default function App() {
       try {
         await supabase.from('books').delete().eq('id', id);
         await supabase.from('book_customizations').delete().eq('id', id);
+        try {
+          await supabase.from('marc21_records').delete().or(`id.eq.${id},accession_no.eq.${id}`);
+        } catch {}
       } catch (sbErr) {
         console.warn('Direct Supabase delete note:', sbErr);
       }

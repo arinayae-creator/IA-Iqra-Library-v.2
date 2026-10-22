@@ -579,6 +579,9 @@ export default async function handler(req: any, res: any) {
       const subjectGeo651 = getField('651', 'a');
       const subjects650 = marcRecords.filter((r: any) => r.tagID === '650').map((r: any) => parseMarcSubfield(r.data, 'a') || r.data.replace(/[\u001f\$][a-z0-9]/g, ' ').trim());
       const subject650_2 = subjects650.length > 1 ? subjects650[1] : '-';
+      const subject650_3 = subjects650.length > 2 ? subjects650[2] : '-';
+      const subject650_4 = subjects650.length > 3 ? subjects650[3] : '-';
+      const subject650_5 = subjects650.length > 4 ? subjects650[4] : '-';
       const addedCorp710 = getField('710', 'a');
       const addedTitle740 = getField('740', 'a');
       const seriesUniform830 = getField('830', 'a');
@@ -666,6 +669,9 @@ export default async function handler(req: any, res: any) {
         subject_uniform_630: subjectUniform630 || '-',
         subject_geo_651: subjectGeo651 || '-',
         subject_650_2: subject650_2,
+        subject_650_3: subject650_3,
+        subject_650_4: subject650_4,
+        subject_650_5: subject650_5,
         added_corp_710: addedCorp710 || '-',
         added_title_740: addedTitle740 || '-',
         series_uniform_830: seriesUniform830 || series490 || '-',

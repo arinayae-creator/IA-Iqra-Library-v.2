@@ -71,6 +71,7 @@ export interface Marc21Record {
   subject_650_2?: string;
   subject_650_3?: string;
   subject_650_4?: string;
+  subject_650_5?: string;
   extraSubjects?: string[];
   all650Subjects?: string[];
   added_corp_710?: string;

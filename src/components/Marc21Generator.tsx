@@ -50,6 +50,7 @@ import * as XLSX from 'xlsx';
 import { Marc21Record, MarcTagItem, generateThaiCutter, generateMarcTagsFromRecord } from '../../api/generate-marc21';
 import { supabase } from '../../supabaseClient';
 import { saveRecordsToIndexedDb, loadRecordsFromIndexedDb } from '../utils/marcIndexedDb';
+import { DdcClassificationModal } from './DdcClassificationModal';
 
 export const calculateThaiCutter = generateThaiCutter;
 
@@ -965,98 +966,166 @@ export function extractVolumeFromTitle(title?: string, subtitle?: string, extra?
   return '-';
 }
 
+export const normalizeIsbn = (raw?: string): string => {
+  if (!raw) return '';
+  const clean = String(raw).replace(/[^0-9X]/gi, '').toUpperCase();
+  return clean.length >= 9 ? clean : '';
+};
+
+export const normalizeIssn = (raw?: string): string => {
+  if (!raw) return '';
+  const clean = String(raw).replace(/[^0-9X]/gi, '').toUpperCase();
+  return clean.length >= 7 ? clean : '';
+};
+
+export const getStandardIsbnKey = (raw?: string): string => {
+  const clean = normalizeIsbn(raw);
+  if (!clean) return '';
+  if (clean.length === 10) {
+    return '978' + clean.substring(0, 9);
+  }
+  if (clean.length === 13) {
+    return clean.substring(0, 12);
+  }
+  return clean;
+};
+
+export const isSameIsbn = (isbn1?: string, isbn2?: string): boolean => {
+  const k1 = getStandardIsbnKey(isbn1);
+  const k2 = getStandardIsbnKey(isbn2);
+  if (!k1 || !k2) return false;
+  return k1 === k2;
+};
+
+export const isSameBookForCopy = (
+  r1: { isbn?: string; issn?: string; issn_022?: string; title_245a?: string; title?: string },
+  r2: { isbn?: string; issn?: string; issn_022?: string; title_245a?: string; title?: string }
+): boolean => {
+  if (!r1 || !r2) return false;
+
+  const isbn1 = normalizeIsbn(r1.isbn);
+  const isbn2 = normalizeIsbn(r2.isbn);
+
+  // 1. Primary: Match by 020 ISBN
+  if (isbn1 && isbn2) {
+    return isSameIsbn(isbn1, isbn2);
+  }
+
+  // 2. Primary for Serials/Periodicals: Match by 022 ISSN
+  const issn1 = normalizeIssn(r1.issn_022 || r1.issn);
+  const issn2 = normalizeIssn(r2.issn_022 || r2.issn);
+  if (issn1 && issn2) {
+    return issn1 === issn2;
+  }
+
+  // If one has ISBN/ISSN and other has a different ISBN/ISSN, they NEVER match as copies
+  if ((isbn1 && isbn2 && !isSameIsbn(isbn1, isbn2)) || (issn1 && issn2 && issn1 !== issn2)) {
+    return false;
+  }
+
+  // 3. Fallback ONLY when neither book has ISBN nor ISSN
+  if (!isbn1 && !isbn2 && !issn1 && !issn2) {
+    const t1 = (r1.title_245a || r1.title || '').replace(/[:=;/\\.,\s]/g, '').toLowerCase();
+    const t2 = (r2.title_245a || r2.title || '').replace(/[:=;/\\.,\s]/g, '').toLowerCase();
+    if (t1 && t2 && t1.length >= 3 && t1 === t2) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 export function calculateCopyNumber(
   record: Marc21Record,
-  allRecords: Marc21Record[],
+  allRecords: Marc21Record[] = [],
   libraryBooks: any[] = []
 ): { copyNumber: number; totalCopies: number } {
   if (!record) return { copyNumber: 1, totalCopies: 1 };
 
-  const targetIsbn = (record.isbn || '').replace(/[^0-9X]/gi, '');
-  const targetIssn = (record.issn_022 || '').replace(/[^0-9X]/gi, '');
-  const targetTitle = (record.title_245a || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
-
   const getAccNum = (acc?: string): number => {
     if (!acc) return 0;
-    const digits = acc.replace(/[^0-9]/g, '');
+    const digits = String(acc).replace(/[^0-9]/g, '');
     return digits ? parseInt(digits, 10) : 0;
   };
 
-  const copyMap = new Map<string, { id: string; accNo: string; num: number }>();
+  const copyMap = new Map<string, { id: string; accNo: string; num: number; date?: string }>();
 
-  // Add all matching items from allRecords
+  // 1. Scan matching items from allRecords (MARC 21 records)
   allRecords.forEach(r => {
-    let match = false;
-    const rIsbn = (r.isbn || '').replace(/[^0-9X]/gi, '');
-    const rIssn = (r.issn_022 || '').replace(/[^0-9X]/gi, '');
-    const rTitle = (r.title_245a || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
-
-    if (targetIsbn && targetIsbn.length >= 8 && rIsbn) {
-      match = (rIsbn === targetIsbn || rIsbn.includes(targetIsbn) || targetIsbn.includes(rIsbn));
-    } else if (targetIssn && targetIssn.length >= 7 && rIssn) {
-      match = (rIssn === targetIssn);
-    } else if (targetTitle && targetTitle.length > 2 && rTitle) {
-      match = (rTitle === targetTitle);
-    }
-
-    if (match || r.id === record.id) {
-      const key = r.accession_no || r.id;
+    if (isSameBookForCopy(record, r) || r.id === record.id) {
+      const rawAcc = r.accession_no || r.id;
+      const formatted = formatAccessionNo(rawAcc);
+      const key = formatted || r.id;
       copyMap.set(key, {
         id: r.id,
-        accNo: r.accession_no,
-        num: getAccNum(r.accession_no)
+        accNo: formatted || r.accession_no || '',
+        num: getAccNum(r.accession_no),
+        date: r.date || ''
       });
     }
   });
 
-  // Add matching items from libraryBooks (if provided)
+  // 2. Scan matching items from libraryBooks (if provided)
   if (Array.isArray(libraryBooks)) {
     libraryBooks.forEach(b => {
-      let match = false;
-      const bIsbn = (b.isbn || '').replace(/[^0-9X]/gi, '');
-      const bIssn = (b.issn || b.issn_022 || '').replace(/[^0-9X]/gi, '');
-      const bTitle = (b.title || '').replace(/[:=;/\\.,]/g, '').trim().toLowerCase();
-
-      if (targetIsbn && targetIsbn.length >= 8 && bIsbn) {
-        match = (bIsbn === targetIsbn || bIsbn.includes(targetIsbn) || targetIsbn.includes(bIsbn));
-      } else if (targetIssn && targetIssn.length >= 7 && bIssn) {
-        match = (bIssn === targetIssn);
-      } else if (targetTitle && targetTitle.length > 2 && bTitle) {
-        match = (bTitle === targetTitle);
-      }
-
-      if (match) {
-        const acc = b.accession_no || b.barcode || b.id || '';
-        const key = acc || b.id;
-        if (!copyMap.has(key)) {
-          copyMap.set(key, {
-            id: b.id,
-            accNo: acc,
-            num: getAccNum(acc)
+      if (isSameBookForCopy(record, b)) {
+        if (Array.isArray(b.copies_list) && b.copies_list.length > 0) {
+          b.copies_list.forEach((c: any) => {
+            const rawAcc = c.accession_no || c.barcode || c.id || '';
+            const formatted = formatAccessionNo(rawAcc);
+            const key = formatted || (c.id || b.id);
+            if (!copyMap.has(key)) {
+              copyMap.set(key, {
+                id: c.id || b.id,
+                accNo: formatted || rawAcc,
+                num: getAccNum(rawAcc),
+                date: c.created_at || b.created_at || ''
+              });
+            }
           });
+        } else {
+          const rawAcc = b.accession_no || b.barcode || b.id || '';
+          const formatted = formatAccessionNo(rawAcc);
+          const key = formatted || b.id;
+          if (!copyMap.has(key)) {
+            copyMap.set(key, {
+              id: b.id,
+              accNo: formatted || rawAcc,
+              num: getAccNum(rawAcc),
+              date: b.created_at || ''
+            });
+          }
         }
       }
     });
   }
 
-  // Ensure current record is definitely included
-  const currKey = record.accession_no || record.id;
+  // Ensure current record is definitely included in copyMap
+  const currRawAcc = record.accession_no || record.id;
+  const currFormatted = formatAccessionNo(currRawAcc);
+  const currKey = currFormatted || record.id;
   if (!copyMap.has(currKey)) {
     copyMap.set(currKey, {
       id: record.id,
-      accNo: record.accession_no,
-      num: getAccNum(record.accession_no)
+      accNo: currFormatted || record.accession_no || '',
+      num: getAccNum(record.accession_no),
+      date: record.date || ''
     });
   }
 
-  // Sort copies by accession number ascending
+  // Sort copies by accession number ascending (earliest accession number = ฉบับที่ 1, next = ฉบับที่ 2, etc.)
   const sortedCopies = Array.from(copyMap.values()).sort((a, b) => {
-    if (a.num !== b.num) return a.num - b.num;
+    if (a.num > 0 && b.num > 0 && a.num !== b.num) return a.num - b.num;
+    if (a.date && b.date && a.date !== b.date) return a.date.localeCompare(b.date);
     return (a.accNo || '').localeCompare(b.accNo || '');
   });
 
   const currNum = getAccNum(record.accession_no);
-  const foundIdx = sortedCopies.findIndex(c => c.id === record.id || c.accNo === record.accession_no || (currNum > 0 && c.num === currNum));
+  const foundIdx = sortedCopies.findIndex(c => 
+    c.id === record.id || 
+    (currFormatted && c.accNo && formatAccessionNo(c.accNo) === currFormatted) ||
+    (currNum > 0 && c.num === currNum)
+  );
 
   const copyNumber = foundIdx >= 0 ? foundIdx + 1 : 1;
   const totalCopies = Math.max(sortedCopies.length, 1);
@@ -1088,6 +1157,10 @@ export const MARC21_COLUMNS = [
   { key: 'pages_300a', label: '300 $a จำนวนหน้า', tag: '300 $a', width: 'w-28' },
   { key: 'illustration_300b', label: '300 $b ภาพประกอบ', tag: '300 $b', width: 'w-28' },
   { key: 'subject_650a', label: '650 $a หัวเรื่อง 1', tag: '650 $a', width: 'w-52' },
+  { key: 'subject_650_2', label: '650 $a หัวเรื่องที่ 2', tag: '650 $a', width: 'w-52' },
+  { key: 'subject_650_3', label: '650 $a หัวเรื่องที่ 3', tag: '650 $a', width: 'w-52' },
+  { key: 'subject_650_4', label: '650 $a หัวเรื่องที่ 4', tag: '650 $a', width: 'w-52' },
+  { key: 'subject_650_5', label: '650 $a หัวเรื่องที่ 5', tag: '650 $a', width: 'w-52' },
   { key: 'copies', label: 'จำนวนเล่ม', tag: 'QTY', width: 'w-24' },
   { key: 'summary_520', label: '520 เรื่องย่อ.', tag: '520', width: 'w-80' },
   { key: 'edition_250', label: '250 พิมพ์ครั้งที่', tag: '250', width: 'w-32' },
@@ -1118,8 +1191,6 @@ export const MARC21_COLUMNS = [
   { key: 'subject_corp_610', label: '610 หัวเรื่อง - นิติบุคคล', tag: '610', width: 'w-48' },
   { key: 'subject_uniform_630', label: '630 หัวเรื่อง - ชื่อแบบฉบับ/กลุ่มผู้อ่าน', tag: '630', width: 'w-48' },
   { key: 'subject_geo_651', label: '651 หัวเรื่อง - ชื่อภูมิศาสตร์', tag: '651', width: 'w-48' },
-  { key: 'subject_650_2', label: '650 หัวเรื่อง 2', tag: '650 (2)', width: 'w-48' },
-  { key: 'subject_650_3', label: '650 หัวเรื่อง 3', tag: '650 (3)', width: 'w-48' },
   { key: 'added_corp_710', label: '710 ผู้แต่งร่วม - นิติบุคคล', tag: '710', width: 'w-48' },
   { key: 'added_title_740', label: '740 ชื่อเรื่องเกี่ยวข้อง', tag: '740', width: 'w-56' },
   { key: 'series_uniform_830', label: '830 ชื่อชุดแบบฉบับ', tag: '830', width: 'w-56' },
@@ -1127,8 +1198,8 @@ export const MARC21_COLUMNS = [
   { key: 'local_907', label: '907 เลขระเบียนท้องถิ่น', tag: '907', width: 'w-32' },
 ];
 
-// Primary 29 columns from first column (date) up to Column 3 (EXTRA2) for copying
-export const PRIMARY_COPY_COLUMNS = MARC21_COLUMNS.slice(0, 29);
+// Primary columns from first column (date วันที่) up to Status (STAT สถานะ) for copying
+export const PRIMARY_COPY_COLUMNS = MARC21_COLUMNS.slice(0, MARC21_COLUMNS.findIndex(c => c.key === 'status') + 1);
 
 export const DEFAULT_STORAGE_LOCATIONS = [
   'สำหรับเด็ก',
@@ -1196,6 +1267,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const [batchQueries, setBatchQueries] = useState('');
   const [isBatchOpen, setIsBatchOpen] = useState(false);
   const [isCutterTableOpen, setIsCutterTableOpen] = useState(false);
+  const [isDdcModalOpen, setIsDdcModalOpen] = useState(false);
   const [testAuthor, setTestAuthor] = useState('โสรยา');
   const [testTitle, setTestTitle] = useState('การทดลอง');
   const [isLoading, setIsLoading] = useState(false);
@@ -1206,6 +1278,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const [copiedCardInModal, setCopiedCardInModal] = useState<boolean>(false);
   const [isFetchingAiCover, setIsFetchingAiCover] = useState(false);
   const [lastCopiedRow, setLastCopiedRow] = useState<Marc21Record | null>(null);
+  const [copyIncludeHeaders, setCopyIncludeHeaders] = useState<boolean>(false);
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<'selected' | Marc21Record | null>(null);
   const [startAccNum, setStartAccNum] = useState<number>(() => {
     try {
@@ -1229,11 +1302,12 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const [isSyncingCloud, setIsSyncingCloud] = useState(false);
   const [hasCloudTable, setHasCloudTable] = useState<boolean | null>(null);
   const [hasRlsError, setHasRlsError] = useState(false);
-  const [cloudSqlTab, setCloudSqlTab] = useState<'rls' | 'all'>('rls');
+  const [cloudSqlTab, setCloudSqlTab] = useState<'columns' | 'rls' | 'all'>('columns');
   const [lastCloudSyncTime, setLastCloudSyncTime] = useState<string | null>(null);
   const [isCloudSetupModalOpen, setIsCloudSetupModalOpen] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
   const [copiedRlsSql, setCopiedRlsSql] = useState(false);
+  const [copiedColSql, setCopiedColSql] = useState(false);
 
 
   // Dedicated UC-TAL ThaiLIS (https://uc.thailis.or.th) Box Search States
@@ -1653,6 +1727,15 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     return Array.from(set).filter(Boolean);
   }, [records]);
 
+  // Dynamic Copy Number calculation for every record in the table based on 020 ISBN or 022 ISSN
+  const recordCopyNumberMap = React.useMemo(() => {
+    const map = new Map<string, { copyNumber: number; totalCopies: number }>();
+    records.forEach(r => {
+      map.set(r.id, calculateCopyNumber(r, records, libraryBooks));
+    });
+    return map;
+  }, [records, libraryBooks]);
+
   // Dynamic suggestions for 700 translators / co-authors / contributors
   const allAvailableTranslators700 = React.useMemo(() => {
     const set = new Set<string>([
@@ -1830,10 +1913,50 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     }
   };
 
-  // Handle inline change of 650 $a from dropdown
-  const handleSubjectChange = (recordId: string, newSubject: string) => {
-    setRecords(prev => prev.map(r => r.id === recordId ? { ...r, subject_650a: newSubject } : r));
-    showToast(`🏷️ อัปเดตหัวเรื่อง 650 $a เป็น "${newSubject}" เรียบร้อยแล้ว`);
+  // Handle inline change of 650 $a from dropdown (supports columns 1-5)
+  const handleSubjectChange = (recordId: string, newSubject: string, subjectIndex: number = 1) => {
+    const fieldKey = subjectIndex === 1 ? 'subject_650a' : `subject_650_${subjectIndex}`;
+    setRecords(prev => prev.map(r => {
+      if (r.id !== recordId) return r;
+      let updatedTags = Array.isArray(r.marc_tags) ? [...r.marc_tags] : [];
+
+      if (newSubject && newSubject !== '-') {
+        const tag650Indices: number[] = [];
+        updatedTags.forEach((t, i) => {
+          if (t && (t.tagID === '650' || (t as any).tag === '650')) {
+            tag650Indices.push(i);
+          }
+        });
+
+        const targetPos = subjectIndex - 1;
+        if (targetPos < tag650Indices.length) {
+          const actualIdx = tag650Indices[targetPos];
+          updatedTags[actualIdx] = { ...updatedTags[actualIdx], data: `$a${newSubject}` };
+        } else {
+          let insertIdx = -1;
+          for (let i = updatedTags.length - 1; i >= 0; i--) {
+            const t = updatedTags[i];
+            if (t && parseInt(t.tagID || (t as any).tag, 10) <= 650) {
+              insertIdx = i;
+              break;
+            }
+          }
+          const newTag = { tagID: '650', indc1: '', indc2: '4', data: `$a${newSubject}` };
+          if (insertIdx >= 0) updatedTags.splice(insertIdx + 1, 0, newTag);
+          else updatedTags.push(newTag);
+        }
+      }
+
+      const updated = {
+        ...r,
+        [fieldKey]: newSubject,
+        marc_tags: updatedTags
+      };
+      syncRecordToCloud(updated);
+      return updated;
+    }));
+    const label = subjectIndex === 1 ? '650 $a หัวเรื่อง 1' : `650 $a หัวเรื่องที่ ${subjectIndex}`;
+    showToast(`🏷️ อัปเดต ${label} เป็น "${newSubject}" เรียบร้อยแล้ว`);
   };
 
   // Handle inline change of 250 (พิมพ์ครั้งที่)
@@ -1932,6 +2055,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       subject_geo_651: r.subject_geo_651 || null,
       subject_650_2: r.subject_650_2 || null,
       subject_650_3: r.subject_650_3 || null,
+      subject_650_4: r.subject_650_4 || null,
+      subject_650_5: r.subject_650_5 || null,
       added_corp_710: r.added_corp_710 || null,
       added_title_740: r.added_title_740 || null,
       series_uniform_830: r.series_uniform_830 || null,
@@ -1949,16 +2074,35 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
   const syncRecordToCloud = async (rec: Marc21Record) => {
     try {
       const payload = recordToDbPayload(rec);
-      const { error } = await supabase.from('marc21_records').upsert(payload, { onConflict: 'id' });
+      let { error } = await supabase.from('marc21_records').upsert(payload, { onConflict: 'id' });
+      
+      // Auto-fallback if schema difference (e.g. PGRST204 column not found on Supabase)
+      if (error && error.code === 'PGRST204') {
+        const sanitized = { ...payload };
+        delete (sanitized as any).subject_650_2;
+        delete (sanitized as any).subject_650_3;
+        delete (sanitized as any).subject_650_4;
+        delete (sanitized as any).subject_650_5;
+        const retry = await supabase.from('marc21_records').upsert(sanitized, { onConflict: 'id' });
+        error = retry.error;
+      }
+
       if (!error) {
         setHasCloudTable(true);
         setHasRlsError(false);
-      } else if (error.code === '42P01') {
-        setHasCloudTable(false);
-      } else if (error.code === '42501' || error.message?.includes('row-level security')) {
-        setHasRlsError(true);
+      } else {
+        console.warn('[Supabase marc21_records Sync Warning]:', error.message || error);
+        if (error.code === '42P01') {
+          setHasCloudTable(false);
+        } else if (error.code === '42501' || error.message?.includes('row-level security')) {
+          setHasRlsError(true);
+        }
       }
-    } catch {}
+      return !error;
+    } catch (err) {
+      console.warn('[Supabase marc21_records Exception]:', err);
+      return false;
+    }
   };
 
   // Sync batch of records to Supabase Cloud
@@ -1968,8 +2112,21 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       const payloads = batch.map(recordToDbPayload);
       for (let i = 0; i < payloads.length; i += 50) {
         const chunk = payloads.slice(i, i + 50);
-        const { error } = await supabase.from('marc21_records').upsert(chunk, { onConflict: 'id' });
+        let { error } = await supabase.from('marc21_records').upsert(chunk, { onConflict: 'id' });
+        if (error && error.code === 'PGRST204') {
+          const sanitizedChunk = chunk.map(item => {
+            const copy = { ...item };
+            delete (copy as any).subject_650_2;
+            delete (copy as any).subject_650_3;
+            delete (copy as any).subject_650_4;
+            delete (copy as any).subject_650_5;
+            return copy;
+          });
+          const retry = await supabase.from('marc21_records').upsert(sanitizedChunk, { onConflict: 'id' });
+          error = retry.error;
+        }
         if (error) {
+          console.warn('[Supabase Batch Sync Warning]:', error.message || error);
           if (error.code === '42P01') {
             setHasCloudTable(false);
             return;
@@ -1982,7 +2139,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       }
       setHasCloudTable(true);
       setHasRlsError(false);
-    } catch {}
+    } catch (err) {
+      console.warn('[Supabase Batch Sync Exception]:', err);
+    }
   };
 
   // Delete single record from Supabase Cloud
@@ -2906,7 +3065,15 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       pages_300a: (item.pages || item.pages_300a || '160 หน้า').replace(/[\s\/:;=,]+$/, '').replace(/^[\s\/:;=,]+/, '').trim(),
       illustration_300b: item.illustration_300b || 'ภาพประกอบ',
       subject_650a: item.subject || item.subject_650a || 'ทั่วไป',
-      copies: '1',
+      copies: (() => {
+        const detectedCopy = calculateCopyNumber({
+          accession_no: accNo,
+          isbn: item.isbn || '',
+          issn_022: item.issn_022 || '',
+          title_245a: cleanTitleObj.formatted245a
+        } as any, records, libraryBooks);
+        return detectedCopy.totalCopies > 1 ? String(detectedCopy.copyNumber) : '1';
+      })(),
       summary_520: item.summary || item.summary_520 || `หนังสือ "${item.title || item.title_245a}" จากฐานข้อมูลสหบรรณานุกรมสถาบันอุดมศึกษาไทย (UC-TAL)`,
       edition_250: item.edition_250 || 'พิมพ์ครั้งที่ 1',
       price_541: finalPrice541,
@@ -2942,6 +3109,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       subject_geo_651: item.subject_geo_651 || '-',
       subject_650_2: item.subject_650_2 || '-',
       subject_650_3: item.subject_650_3 || '-',
+      subject_650_4: item.subject_650_4 || '-',
+      subject_650_5: item.subject_650_5 || '-',
       added_corp_710: item.added_corp_710 || '-',
       added_title_740: item.added_title_740 || '-',
       series_uniform_830: item.series_uniform_830 || item.series || item.series_490 || '-',
@@ -2952,7 +3121,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     setRecords(prev => [newRecord, ...prev]);
     setStartAccNum(runAcc + 1);
     syncRecordToCloud(newRecord);
-    showToast(`✅ นำเข้าข้อมูลเล่ม "${newRecord.title_245a.substring(0, 30)}..." ${institutionName ? `(สถาบัน: ${institutionName})` : ''} สู่ตารางครบถ้วนทุก MARC Tag เรียบร้อย!`);
+    const copyBadge = parseInt(newRecord.copies, 10) > 1 ? ` (ฉบับที่ ${newRecord.copies})` : '';
+    showToast(`✅ นำเข้าข้อมูลเล่ม "${newRecord.title_245a.substring(0, 30)}..."${copyBadge} ${institutionName ? `(สถาบัน: ${institutionName})` : ''} สู่ตารางครบถ้วนทุก MARC Tag เรียบร้อย!`);
   };
 
   // Batch items submit
@@ -3223,7 +3393,27 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       return r.storage_location || 'สำหรับเด็ก';
     }
     if (key === 'subject_650a') {
-      return r.subject_650a || 'ทั่วไป';
+      const rawVal = r.subject_650a;
+      if (rawVal && rawVal !== '-') return rawVal;
+      const { subjects } = extractAllSubjectsAndDdc(r);
+      return subjects[0] || 'ทั่วไป';
+    }
+    if (key === 'subject_650_2' || key === 'subject_650_3' || key === 'subject_650_4' || key === 'subject_650_5') {
+      const subIdx = key === 'subject_650_2' ? 2 : key === 'subject_650_3' ? 3 : key === 'subject_650_4' ? 4 : 5;
+      const rawVal = (r as any)[key];
+      if (rawVal && rawVal !== '-') {
+        return rawVal;
+      }
+      const { subjects } = extractAllSubjectsAndDdc(r);
+      const extracted = subjects[subIdx - 1];
+      if (extracted && extracted !== '-') {
+        return extracted;
+      }
+      return '-';
+    }
+    if (key === 'copies') {
+      const copyInfo = recordCopyNumberMap.get(r.id) || calculateCopyNumber(r, records, libraryBooks);
+      return String(copyInfo.copyNumber || r.copies || '1');
     }
     if (key === 'status') {
       return r.status || 'อยู่บนชั้น';
@@ -3354,7 +3544,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     const s1 = subjects[0] || (r.subject_650a && r.subject_650a !== '-' ? r.subject_650a : '') || '';
     const s2 = subjects[1] || (r.subject_650_2 && r.subject_650_2 !== '-' ? r.subject_650_2 : '') || '';
     const s3 = subjects[2] || (r.subject_650_3 && r.subject_650_3 !== '-' ? r.subject_650_3 : '') || '';
-    const extra = subjects.slice(3);
+    const s4 = subjects[3] || (r.subject_650_4 && r.subject_650_4 !== '-' ? r.subject_650_4 : '') || '';
+    const s5 = subjects[4] || (r.subject_650_5 && r.subject_650_5 !== '-' ? r.subject_650_5 : '') || '';
+    const extra = subjects.slice(5);
 
     setEditModalTab('card');
     setEditingRecord({
@@ -3362,16 +3554,18 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
       subject_650a: s1,
       subject_650_2: s2,
       subject_650_3: s3,
+      subject_650_4: s4,
+      subject_650_5: s5,
       extraSubjects: extra,
     });
   };
 
-  // Copy single row (From Column 1 to Column 3 EXTRA2)
+  // Copy single row (From Column Date วันที่ to Stat สถานะ)
   const handleCopyRow = (r: Marc21Record) => {
     setLastCopiedRow(r);
     const tsv = recordToTsvRow(r);
     navigator.clipboard.writeText(tsv).then(() => {
-      showToast(`📋 คัดลอกแถว "${r.title_245a.substring(0, 30)}..." (คอลัมน์แรก - คอลัมน์3) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel หรือกดไอคอนวาง`);
+      showToast(`📋 คัดลอกแถว "${r.title_245a.substring(0, 30)}..." (คอลัมน์ Date วันที่ - Stat สถานะ) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel หรือกดไอคอนวาง`);
     }).catch(() => {
       showToast(`📋 คัดลอกแถว "${r.title_245a.substring(0, 30)}..." เรียบร้อย`);
     });
@@ -3387,7 +3581,15 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         const clipText = await navigator.clipboard.readText();
         if (clipText && clipText.trim()) {
           const parts = clipText.trim().split('\t');
-          if (parts.length >= 10) {
+          if (parts.length >= PRIMARY_COPY_COLUMNS.length) {
+            const parsedData: Record<string, any> = {};
+            PRIMARY_COPY_COLUMNS.forEach((col, idx) => {
+              if (col.key !== 'accession_no') {
+                parsedData[col.key] = parts[idx] || '';
+              }
+            });
+            sourceData = parsedData;
+          } else if (parts.length >= 10) {
             sourceData = {
               date: parts[0] || '',
               col1: parts[1] || '',
@@ -3415,8 +3617,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
               col2: parts[24] || '',
               source_type: parts[25] || '',
               storage_location: parts[26] || 'สำหรับเด็ก',
-              status: parts[27] || 'มีอยู่',
-              col3: parts[28] || ''
+              status: parts[27] || 'มีอยู่'
             };
           }
         }
@@ -3444,16 +3645,18 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     showToast('📋 วางข้อมูลที่คัดลอกลงในแถวนี้เรียบร้อยแล้ว');
   };
 
-  // Copy selected rows (From Column 1 to Column 3 EXTRA2)
+  // Copy selected rows (From Date วันที่ to Stat สถานะ รวมหัวเรื่อง 1-5)
   const handleCopySelected = () => {
     const targetRows = records.filter(r => selectedIds.has(r.id));
     if (targetRows.length === 0) {
       showToast('⚠️ กรุณาเลือกแถวที่ต้องการคัดลอกอย่างน้อย 1 รายการ');
       return;
     }
-    const tsv = targetRows.map(recordToTsvRow).join('\n');
-    navigator.clipboard.writeText(tsv).then(() => {
-      showToast(`📋 คัดลอก ${targetRows.length} รายการที่เลือก (คอลัมน์แรก - คอลัมน์3) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel`);
+    const headerLine = PRIMARY_COPY_COLUMNS.map(c => c.label.replace(/\n/g, ' ')).join('\t');
+    const rowsTsv = targetRows.map(recordToTsvRow).join('\n');
+    const fullTsv = copyIncludeHeaders ? `${headerLine}\n${rowsTsv}` : rowsTsv;
+    navigator.clipboard.writeText(fullTsv).then(() => {
+      showToast(`📋 คัดลอก ${targetRows.length} รายการที่เลือก (คอลัมน์ Date วันที่ - Stat สถานะ รวมหัวเรื่อง 1-5${copyIncludeHeaders ? ' พร้อมหัวตาราง' : ''}) ลงคลิปบอร์ดแล้ว! พร้อมวางใน Excel`);
     });
   };
 
@@ -3606,7 +3809,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         await syncBookRecordToSupabase(r);
         count++;
       }
-      showToast(`💾 บันทึกรายการ ${count} เล่ม ลงฐานข้อมูลห้องสมุดเรียบร้อยแล้ว!`);
+      await syncBatchToCloud(targetRows);
+      showToast(`💾 บันทึกรายการ ${count} เล่ม ลงฐานข้อมูลห้องสมุดและตาราง MARC 21 เรียบร้อยแล้ว!`);
       if (onBookAddedToLibrary) onBookAddedToLibrary();
     } catch (err: any) {
       showToast(`⚠️ เกิดข้อผิดพลาดในการบันทึก: ${err?.message || err}`);
@@ -3636,18 +3840,19 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     showToast(`🗑️ ลบรายการที่เลือกจำนวน ${deletedCount} รายการเรียบร้อยแล้ว`);
   };
 
-  // Copy all rows (From Column 1 to Column 3 EXTRA2)
-  const handleCopyAll = (includeHeaders = false) => {
+  // Copy all rows (From Column Date วันที่ to Stat สถานะ รวมหัวเรื่อง 1-5)
+  const handleCopyAll = (forcedHeaders?: boolean) => {
     if (records.length === 0) {
       showToast('⚠️ ไม่มีข้อมูลในตารางสำหรับคัดลอก');
       return;
     }
+    const shouldIncludeHeaders = typeof forcedHeaders === 'boolean' ? forcedHeaders : copyIncludeHeaders;
     const headerLine = PRIMARY_COPY_COLUMNS.map(c => c.label.replace(/\n/g, ' ')).join('\t');
     const rowsTsv = records.map(recordToTsvRow).join('\n');
-    const fullTsv = includeHeaders ? `${headerLine}\n${rowsTsv}` : rowsTsv;
+    const fullTsv = shouldIncludeHeaders ? `${headerLine}\n${rowsTsv}` : rowsTsv;
 
     navigator.clipboard.writeText(fullTsv).then(() => {
-      showToast(`📋 คัดลอกข้อมูลทั้งหมด ${records.length} แถว (คอลัมน์แรก - คอลัมน์3 EXTRA2) ลงคลิปบอร์ดสำเร็จ! พร้อมวางใน Excel`);
+      showToast(`📋 คัดลอกข้อมูลทั้งหมด ${records.length} แถว (คอลัมน์ Date วันที่ - Stat สถานะ รวมหัวเรื่อง 1-5${shouldIncludeHeaders ? ' พร้อมหัวตาราง' : ''}) ลงคลิปบอร์ดสำเร็จ! พร้อมวางใน Excel`);
     });
   };
 
@@ -3798,14 +4003,47 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     showToast('🗑️ ลบแถวเรียบร้อยแล้ว');
   };
 
-  // Sync to Supabase
+  // Sync to Supabase (Both books and marc21_records)
   const handleSyncToLibrary = async (r: Marc21Record) => {
     try {
       const payload = await syncBookRecordToSupabase(r);
-      showToast(`💾 บันทึกเล่ม "${payload.title}" เข้าสู่ระบบห้องสมุดเรียบร้อยแล้ว!`);
+      const marcSuccess = await syncRecordToCloud(r);
+      if (marcSuccess) {
+        showToast(`💾 บันทึกเล่ม "${payload.title}" เข้าสู่ระบบห้องสมุด (books) และตาราง marc21_records บน Supabase เรียบร้อยแล้ว!`);
+      } else {
+        showToast(`⚠️ บันทึกลงตาราง books สำเร็จ แต่ตาราง marc21_records ไม่สำเร็จ (กรุณาตรวจเช็คคอลัมน์ SQL หรือสิทธิ์ RLS ในปุ่มตั้งค่า Supabase)`);
+      }
       if (onBookAddedToLibrary) onBookAddedToLibrary();
     } catch (e: any) {
       showToast(`⚠️ เกิดข้อผิดพลาดในการบันทึก: ${e.message}`);
+    }
+  };
+  // Handle selecting DDC code from DDC Modal
+  const handleSelectDdcFromModal = (ddcCode: string, nameTh: string) => {
+    if (editingRecord) {
+      setEditingRecord(prev => {
+        if (!prev) return null;
+        let updatedTags = Array.isArray(prev.marc_tags) ? [...prev.marc_tags] : [];
+        const idx082 = updatedTags.findIndex(t => t.tagID === '082' || (t as any).tag === '082');
+        const tag082Data = `$a${ddcCode}$b${prev.cutter_082b || ''}`;
+        if (idx082 >= 0) {
+          updatedTags[idx082] = { ...updatedTags[idx082], data: tag082Data };
+        } else {
+          const insIdx = updatedTags.findIndex(t => parseInt(t.tagID || (t as any).tag, 10) >= 100);
+          const tag082Obj = { tagID: '082', indc1: '0', indc2: '4', data: tag082Data };
+          if (insIdx >= 0) updatedTags.splice(insIdx, 0, tag082Obj);
+          else updatedTags.push(tag082Obj);
+        }
+        return {
+          ...prev,
+          ddc_082a: ddcCode,
+          marc_tags: updatedTags
+        };
+      });
+      showToast(`✨ ใส่เลขหมวด DDC "${ddcCode} (${nameTh})" ลงในระเบียนที่กำลังแก้ไขเรียบร้อยแล้ว`);
+    } else {
+      navigator.clipboard.writeText(ddcCode);
+      showToast(`📋 คัดลอกเลขหมวด DDC "${ddcCode} (${nameTh})" ลงในคลิปบอร์ดเรียบร้อยแล้ว!`);
     }
   };
 
@@ -3853,6 +4091,15 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
+              onClick={() => setIsDdcModalOpen(true)}
+              className="px-3.5 py-2.5 bg-amber-500/30 hover:bg-amber-500/40 text-amber-100 rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-amber-400/40 transition flex items-center gap-2 shadow-sm cursor-pointer"
+              title="ระบบและคู่มือการจัดหมวดหมู่แบบทศนิยมดิวอี้ (Dewey Decimal Classification - DDC)"
+            >
+              <BookOpen className="w-4 h-4 text-amber-300" />
+              <span>การจัดหมวดหมู่ดิวอี้ (DDC)</span>
+            </button>
+            <button
+              type="button"
               onClick={() => setIsSubjectHeadingsModalOpen(true)}
               className="px-3.5 py-2.5 bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-100 rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-emerald-400/40 transition flex items-center gap-2 shadow-sm cursor-pointer"
             >
@@ -3860,6 +4107,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
               <span>หัวเรื่อง (tag650)</span>
             </button>
             <button
+              type="button"
               onClick={() => setIsCutterTableOpen(true)}
               className="px-3.5 py-2.5 bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-100 rounded-xl text-xs sm:text-sm font-semibold backdrop-blur-md border border-emerald-400/40 transition flex items-center gap-2 shadow-sm cursor-pointer"
             >
@@ -4320,21 +4568,34 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
             onClick={handleCopySelected}
             disabled={selectedIds.size === 0}
             className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
-            title="คัดลอกเฉพาะแถวที่เลือกเพื่อนำไปวางใน Excel"
+            title="คัดลอกเฉพาะแถวที่เลือก (Date ถึง Stat รวมหัวเรื่อง 1-5) เพื่อนำไปวางใน Excel"
           >
             <Copy className="w-3.5 h-3.5" />
             <span>คัดลอกที่เลือก ({selectedIds.size})</span>
           </button>
 
           <button
-            onClick={() => handleCopyAll(false)}
+            onClick={() => handleCopyAll()}
             disabled={records.length === 0}
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
-            title="คัดลอกข้อมูลทุกแถวลงคลิปบอร์ดแบบตาราง Excel"
+            title="คัดลอกข้อมูลทุกแถว (Date ถึง Stat รวมหัวเรื่อง 1-5) ลงคลิปบอร์ดแบบตาราง Excel"
           >
             <Copy className="w-3.5 h-3.5 text-amber-300" />
             <span>คัดลอกทั้งหมด ({records.length})</span>
           </button>
+
+          <label
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 cursor-pointer select-none transition shadow-2xs"
+            title="ติ๊กเลือกหากต้องการให้คัดลอกแถวหัวคอลัมน์ (Date ถึง Stat รวมหัวเรื่อง 1-5) ติดไปด้วย"
+          >
+            <input
+              type="checkbox"
+              checked={copyIncludeHeaders}
+              onChange={(e) => setCopyIncludeHeaders(e.target.checked)}
+              className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer w-3.5 h-3.5"
+            />
+            <span>รวมหัวตาราง</span>
+          </label>
 
           <div className="h-4 w-px bg-slate-300 mx-1 hidden sm:block" />
 
@@ -4671,46 +4932,80 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                       <td className="p-2.5 font-mono text-slate-700 text-center">{r.pub_year}</td>
                       <td className="p-2.5 text-slate-600 text-center">{r.pages_300a}</td>
                       <td className="p-2.5 text-slate-500 text-center">{r.illustration_300b}</td>
-                      <td className="p-1.5 min-w-[190px]">
-                        {(() => {
-                          const thisRow650s = Array.isArray(r.marc_tags) 
-                            ? r.marc_tags
-                                .filter((t: any) => t.tagID === '650' || t.tag === '650')
-                                .map((t: any) => parseMarcSubfield(t.data || '', 'a') || t.data?.replace(/[\u001f\$][a-z0-9]/g, ' ')?.trim())
-                                .filter((s): s is string => Boolean(s && s !== '-'))
-                            : [];
+                      {/* 650 $a หัวเรื่อง 1 ถึง 5 */}
+                      {[1, 2, 3, 4, 5].map((subIdx) => {
+                        const isFirst = subIdx === 1;
+                        const propKey = isFirst ? 'subject_650a' : `subject_650_${subIdx}`;
+                        const rawVal = (r as any)[propKey];
 
-                          const rowSpecificSubjects = Array.from(new Set([
-                            ...thisRow650s,
-                            r.subject_650a,
-                            r.subject_650_2
-                          ].filter((s): s is string => Boolean(s && s !== '-'))));
+                        const { subjects: rowExtractedSubs } = extractAllSubjectsAndDdc(r);
 
-                          if (rowSpecificSubjects.length === 0) {
-                            rowSpecificSubjects.push(r.subject_650a || 'ทั่วไป');
+                        let currentVal = '-';
+                        if (isFirst) {
+                          currentVal = (rawVal && rawVal !== '-') ? rawVal : (rowExtractedSubs[0] || 'ทั่วไป');
+                        } else {
+                          if (rawVal && rawVal !== '-') {
+                            currentVal = rawVal;
+                          } else {
+                            currentVal = (rowExtractedSubs[subIdx - 1] && rowExtractedSubs[subIdx - 1] !== '-') ? rowExtractedSubs[subIdx - 1] : '-';
                           }
+                        }
 
-                          const currentVal = r.subject_650a || rowSpecificSubjects[0];
+                        const hasValue = Boolean(currentVal && currentVal !== '-');
 
-                          return (
+                        // Collect unique options for this row
+                        const availableOptions = Array.from(new Set([
+                          ...rowExtractedSubs,
+                          hasValue ? currentVal : '',
+                          ...(isFirst ? ['ทั่วไป'] : [])
+                        ].filter((s): s is string => Boolean(s && s !== '-'))));
+
+                        return (
+                          <td key={`row650_${r.id}_${subIdx}`} className="p-1.5 min-w-[190px]">
                             <div className="relative">
                               <select
                                 value={currentVal}
-                                onChange={(e) => handleSubjectChange(r.id, e.target.value)}
-                                title={`หัวเรื่องตรงของเล่มนี้ (Tag 650): ${currentVal}`}
-                                className="w-full bg-emerald-50/80 hover:bg-white focus:bg-white border border-emerald-300 hover:border-emerald-500 focus:border-emerald-500 rounded-lg px-2 py-1.5 text-xs text-emerald-950 font-medium cursor-pointer transition focus:outline-none focus:ring-2 focus:ring-emerald-500/20 truncate shadow-2xs"
+                                onChange={(e) => handleSubjectChange(r.id, e.target.value, subIdx)}
+                                title={`650 $a หัวเรื่อง${isFirst ? ' 1' : `ที่ ${subIdx}`}: ${currentVal}`}
+                                className={`w-full rounded-lg px-2 py-1.5 text-xs cursor-pointer transition focus:outline-none focus:ring-2 focus:ring-emerald-500/20 truncate shadow-2xs ${
+                                  hasValue
+                                    ? 'bg-emerald-50/80 hover:bg-white focus:bg-white border border-emerald-300 hover:border-emerald-500 focus:border-emerald-500 text-emerald-950 font-medium'
+                                    : 'bg-slate-50 hover:bg-white focus:bg-white border border-slate-200 hover:border-slate-300 focus:border-emerald-500 text-slate-400 font-normal'
+                                }`}
                               >
-                                {rowSpecificSubjects.map((s, sIdx) => (
-                                  <option key={`row650_${r.id}_${sIdx}`} value={s}>
+                                {!isFirst && (
+                                  <option value="-">- ไม่มีหัวเรื่อง -</option>
+                                )}
+                                {availableOptions.map((s, sIdx) => (
+                                  <option key={`opt_${r.id}_${subIdx}_${sIdx}`} value={s}>
+                                    🏷️ {s}
+                                  </option>
+                                ))}
+                                {DEFAULT_SUBJECT_HEADINGS.filter(ds => !availableOptions.includes(ds)).slice(0, 15).map((s, sIdx) => (
+                                  <option key={`defopt_${r.id}_${subIdx}_${sIdx}`} value={s}>
                                     🏷️ {s}
                                   </option>
                                 ))}
                               </select>
                             </div>
+                          </td>
+                        );
+                      })}
+                      <td className="p-2.5 text-center font-mono">
+                        {(() => {
+                          const info = recordCopyNumberMap.get(r.id);
+                          const cNum = info ? info.copyNumber : (r.copies || '1');
+                          const isMulti = info && info.totalCopies > 1;
+                          return (
+                            <span 
+                              className={isMulti ? "inline-flex items-center justify-center font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 text-xs shadow-2xs" : "text-slate-700"}
+                              title={isMulti ? `ฉบับที่ ${cNum} จากทั้งหมด ${info.totalCopies} เล่มในระบบที่มี 020 ISBN/022 ISSN เดียวกัน` : 'ฉบับที่ 1'}
+                            >
+                              {cNum}
+                            </span>
                           );
                         })()}
                       </td>
-                      <td className="p-2.5 text-center font-mono">{r.copies}</td>
                       <td className="p-2.5 text-slate-600 max-w-md">
                         <div className="flex items-center justify-between gap-1.5 min-w-[180px]">
                           <span className="truncate flex-1 text-xs" title={r.summary_520 || 'ยังไม่มีเรื่องย่อ'}>
@@ -4871,7 +5166,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                       <td className="p-2.5 text-slate-700">{r.subject_corp_610 || '-'}</td>
                       <td className="p-2.5 text-slate-700">{r.subject_uniform_630 || '-'}</td>
                       <td className="p-2.5 text-slate-700">{r.subject_geo_651 || '-'}</td>
-                      <td className="p-2.5 text-slate-700">{r.subject_650_2 || '-'}</td>
                       <td className="p-2.5 text-slate-700">{r.added_corp_710 || '-'}</td>
                       <td className="p-2.5 text-slate-600 max-w-xs truncate" title={r.added_title_740}>{r.added_title_740 || '-'}</td>
                       <td className="p-2.5 text-slate-600">{r.series_uniform_830 || '-'}</td>
@@ -5845,9 +6139,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                 })()}
               </div>
 
-              {/* 650 หัวเรื่อง 2 */}
+              {/* 650 $a หัวเรื่องที่ 2 */}
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">650 หัวเรื่อง 2</label>
+                <label className="block font-semibold text-slate-700 mb-1">650 $a หัวเรื่องที่ 2</label>
                 <input
                   type="text"
                   list="subject-headings-list"
@@ -5860,7 +6154,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
               {/* 650 หัวเรื่อง 3 */}
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">650 หัวเรื่อง 3</label>
+                <label className="block font-semibold text-slate-700 mb-1">650 $a หัวเรื่องที่ 3</label>
                 <input
                   type="text"
                   list="subject-headings-list"
@@ -5871,12 +6165,38 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                 />
               </div>
 
-              {/* หัวเรื่องที่ 4 ขึ้นไป (หากรายการมีมากกว่า 3 หัวเรื่อง) */}
+              {/* 650 หัวเรื่อง 4 */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">650 $a หัวเรื่องที่ 4</label>
+                <input
+                  type="text"
+                  list="subject-headings-list"
+                  value={editingRecord.subject_650_4 && editingRecord.subject_650_4 !== '-' ? editingRecord.subject_650_4 : ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, subject_650_4: e.target.value })}
+                  placeholder="ระบุหัวเรื่องที่ 4 (ถ้ามี)..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* 650 หัวเรื่อง 5 */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">650 $a หัวเรื่องที่ 5</label>
+                <input
+                  type="text"
+                  list="subject-headings-list"
+                  value={editingRecord.subject_650_5 && editingRecord.subject_650_5 !== '-' ? editingRecord.subject_650_5 : ''}
+                  onChange={(e) => setEditingRecord({ ...editingRecord, subject_650_5: e.target.value })}
+                  placeholder="ระบุหัวเรื่องที่ 5 (ถ้ามี)..."
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-medium focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* หัวเรื่องที่ 6 ขึ้นไป (หากรายการมีมากกว่า 5 หัวเรื่อง) */}
               {Array.isArray((editingRecord as any).extraSubjects) && (editingRecord as any).extraSubjects.map((extraVal: string, extraIdx: number) => (
                 <div key={`extra_subj_${extraIdx}`} className="space-y-1">
                   <div className="flex items-center justify-between">
                     <label className="block font-semibold text-slate-700 text-xs">
-                      650 หัวเรื่อง {extraIdx + 4}
+                      650 หัวเรื่อง {extraIdx + 6}
                     </label>
                     <button
                       type="button"
@@ -6225,6 +6545,12 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   if (editingRecord.subject_650_3 && editingRecord.subject_650_3 !== '-' && editingRecord.subject_650_3 !== 'ทั่วไป') {
                     allSubsToSave.push(editingRecord.subject_650_3.trim());
                   }
+                  if (editingRecord.subject_650_4 && editingRecord.subject_650_4 !== '-' && editingRecord.subject_650_4 !== 'ทั่วไป') {
+                    allSubsToSave.push(editingRecord.subject_650_4.trim());
+                  }
+                  if (editingRecord.subject_650_5 && editingRecord.subject_650_5 !== '-' && editingRecord.subject_650_5 !== 'ทั่วไป') {
+                    allSubsToSave.push(editingRecord.subject_650_5.trim());
+                  }
                   if (Array.isArray((editingRecord as any).extraSubjects)) {
                     (editingRecord as any).extraSubjects.forEach((s: string) => {
                       const clean = (s || '').trim();
@@ -6242,14 +6568,19 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                     if (idx856 >= 0) updatedTags[idx856] = tagObj;
                     else updatedTags.push(tagObj);
                   }
+                  const currentCopyInfo = calculateCopyNumber(editingRecord, records, libraryBooks);
                   const finalRec = {
                     ...editingRecord,
+                    copies: String(currentCopyInfo.copyNumber),
                     all650Subjects: allSubsToSave,
                     marc_tags: updatedTags
                   };
-                  setRecords(prev => prev.map(item => item.id === finalRec.id ? finalRec : item));
+                  setRecords(prev => {
+                    const next = prev.map(item => item.id === finalRec.id ? finalRec : item);
+                    saveRecordsToIndexedDb(next);
+                    return next;
+                  });
                   await handleSyncToLibrary(finalRec);
-                  syncRecordToCloud(finalRec);
                   setEditingRecord(null);
                   showToast(`💾 บันทึกข้อมูลบรรณานุกรม "${finalRec.title_245a.substring(0, 25)}..." เรียบร้อยแล้ว`);
                 }}
@@ -6702,21 +7033,28 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                 </div>
               </div>
             </div>
-              </div>
-            )}
-
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={() => setIsCutterTableOpen(false)}
-                className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer"
-              >
-                ปิดหน้าต่างตารางคัตเตอร์
-              </button>
-            </div>
           </div>
+        )}
+
+        <div className="flex justify-end pt-2">
+          <button
+            type="button"
+            onClick={() => setIsCutterTableOpen(false)}
+            className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer"
+          >
+            ปิดหน้าต่างตารางคัตเตอร์
+          </button>
         </div>
-      )}
+      </div>
+    </div>
+  )}
+
+      {/* Dewey Decimal Classification (DDC) Modal */}
+      <DdcClassificationModal
+        isOpen={isDdcModalOpen}
+        onClose={() => setIsDdcModalOpen(false)}
+        onSelectDdc={handleSelectDdcFromModal}
+      />
 
       {/* Subject Headings & DDC Classification Modal (Tag 650 & Tag 082 $a) */}
       {isSubjectHeadingsModalOpen && (
@@ -7399,10 +7737,22 @@ END $$;`;
                 </div>
               </div>
 
-              {/* Tab Selector: RLS Unlock vs Full SQL */}
+              {/* Tab Selector: Column Upgrade vs RLS Unlock vs Full SQL */}
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCloudSqlTab('columns')}
+                      className={`px-3 py-1.5 font-bold rounded-xl text-xs transition cursor-pointer flex items-center gap-1.5 ${
+                        cloudSqlTab === 'columns'
+                          ? 'bg-amber-600 text-white shadow-xs'
+                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                      }`}
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>1. เพิ่มคอลัมน์หัวเรื่อง 2-5 (ALTER TABLE สำหรับตารางเดิม)</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => setCloudSqlTab('rls')}
@@ -7413,7 +7763,7 @@ END $$;`;
                       }`}
                     >
                       <AlertTriangle className="w-3.5 h-3.5" />
-                      <span>1. คำสั่งปลดล็อค RLS (ด่วน สำหรับกรณีที่สร้างตารางแล้ว)</span>
+                      <span>2. คำสั่งปลดล็อค RLS</span>
                     </button>
                     <button
                       type="button"
@@ -7425,11 +7775,54 @@ END $$;`;
                       }`}
                     >
                       <Database className="w-3.5 h-3.5" />
-                      <span>2. คำสั่ง SQL ฉบับเต็ม (สร้างตารางใหม่ทั้งหมด)</span>
+                      <span>3. คำสั่ง SQL ฉบับเต็ม (สร้างตารางใหม่)</span>
                     </button>
                   </div>
 
-                  {cloudSqlTab === 'rls' ? (
+                  {cloudSqlTab === 'columns' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const colSql = `-- คำสั่ง SQL สำหรับเพิ่มคอลัมน์เก็บหัวเรื่อง 2 - 5 ในตาราง marc21_records บน Supabase
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_2 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_3 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_4 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_5 TEXT;
+
+-- ปลดล็อค Row-Level Security (RLS) สำหรับตาราง marc21_records ให้บันทึกและแก้ไขข้อมูลได้ 100%
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
+
+-- เปิดใช้งาน Realtime
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;`;
+                        navigator.clipboard.writeText(colSql);
+                        setCopiedColSql(true);
+                        showToast('📋 คัดลอกคำสั่งเพิ่มคอลัมน์หัวเรื่อง 2-5 เรียบร้อยแล้ว! นำไปวางใน Supabase SQL Editor แล้วกด Run ได้เลย');
+                        setTimeout(() => setCopiedColSql(false), 3000);
+                      }}
+                      className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-xs text-xs"
+                    >
+                      {copiedColSql ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedColSql ? 'คัดลอกเรียบร้อยแล้ว!' : 'คัดลอกคำสั่งเพิ่มคอลัมน์หัวเรื่อง 2-5'}</span>
+                    </button>
+                  ) : cloudSqlTab === 'rls' ? (
                     <button
                       type="button"
                       onClick={() => {
@@ -7521,6 +7914,8 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   subject_geo_651 TEXT,
   subject_650_2 TEXT,
   subject_650_3 TEXT,
+  subject_650_4 TEXT,
+  subject_650_5 TEXT,
   added_corp_710 TEXT,
   added_title_740 TEXT,
   series_uniform_830 TEXT,
@@ -7532,6 +7927,12 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- เพิ่มคอลัมน์เก็บหัวเรื่อง 2 ถึง 5 หากมีตารางเดิมอยู่แล้ว
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_2 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_3 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_4 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_5 TEXT;
 
 -- 2. ปิด RLS และสร้าง Policy อนุญาตให้อ่าน/เขียนได้ 100%
 ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
@@ -7577,7 +7978,36 @@ CREATE INDEX IF NOT EXISTS idx_marc21_updated_at ON marc21_records(updated_at DE
                 </div>
 
                 <div className="relative bg-slate-900 text-slate-200 p-4 rounded-2xl font-mono text-[11px] max-h-56 overflow-y-auto border border-slate-800 shadow-inner">
-                  {cloudSqlTab === 'rls' ? (
+                  {cloudSqlTab === 'columns' ? (
+                    <pre className="whitespace-pre-wrap">{`-- คำสั่ง SQL สำหรับเพิ่มคอลัมน์เก็บหัวเรื่อง 2 - 5 ในตาราง marc21_records บน Supabase
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_2 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_3 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_4 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_5 TEXT;
+
+-- ปลดล็อค Row-Level Security (RLS) สำหรับตาราง marc21_records ให้บันทึกและแก้ไขข้อมูลได้ 100%
+ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
+CREATE POLICY "Allow all for marc21_records" 
+ON marc21_records 
+FOR ALL 
+TO public 
+USING (true) 
+WITH CHECK (true);
+
+ALTER TABLE marc21_records REPLICA IDENTITY FULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables 
+    WHERE pubname = 'supabase_realtime' AND tablename = 'marc21_records'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE marc21_records;
+  END IF;
+END $$;`}</pre>
+                  ) : cloudSqlTab === 'rls' ? (
                     <pre className="whitespace-pre-wrap">{`-- ปลดล็อค Row-Level Security (RLS) สำหรับตาราง marc21_records ให้บันทึกและแก้ไขข้อมูลได้ 100%
 ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
 
@@ -7653,6 +8083,8 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   subject_geo_651 TEXT,
   subject_650_2 TEXT,
   subject_650_3 TEXT,
+  subject_650_4 TEXT,
+  subject_650_5 TEXT,
   added_corp_710 TEXT,
   added_title_740 TEXT,
   series_uniform_830 TEXT,
@@ -7664,6 +8096,12 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- เพิ่มคอลัมน์เก็บหัวเรื่อง 2 ถึง 5 หากมีตารางเดิมอยู่แล้ว
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_2 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_3 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_4 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_5 TEXT;
 
 -- 2. ปิด RLS และสร้าง Policy อนุญาตให้อ่าน/เขียนได้ 100%
 ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;

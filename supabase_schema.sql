@@ -163,6 +163,8 @@ CREATE TABLE IF NOT EXISTS marc21_records (
   subject_geo_651 TEXT,
   subject_650_2 TEXT,
   subject_650_3 TEXT,
+  subject_650_4 TEXT,
+  subject_650_5 TEXT,
   added_corp_710 TEXT,
   added_title_740 TEXT,
   series_uniform_830 TEXT,
@@ -177,6 +179,11 @@ CREATE TABLE IF NOT EXISTS marc21_records (
 
 -- ปิด RLS และสร้าง Policy อนุญาตให้อ่าน/เขียนได้โดยตรง 100%
 ALTER TABLE marc21_records DISABLE ROW LEVEL SECURITY;
+
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_2 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_3 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_4 TEXT;
+ALTER TABLE marc21_records ADD COLUMN IF NOT EXISTS subject_650_5 TEXT;
 
 DROP POLICY IF EXISTS "Allow all for marc21_records" ON marc21_records;
 CREATE POLICY "Allow all for marc21_records" 
