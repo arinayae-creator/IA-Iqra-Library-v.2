@@ -1133,6 +1133,130 @@ export function calculateCopyNumber(
   return { copyNumber, totalCopies };
 }
 
+export function getBookCopyGroupKey(r: { isbn?: string; issn?: string; issn_022?: string; title_245a?: string; title?: string }): string {
+  if (!r) return '';
+  const isbn = normalizeIsbn(r.isbn);
+  if (isbn) {
+    const key = getStandardIsbnKey(isbn);
+    if (key) return `isbn:${key}`;
+  }
+  const issn = normalizeIssn(r.issn_022 || r.issn);
+  if (issn) {
+    return `issn:${issn}`;
+  }
+  const t = (r.title_245a || r.title || '').replace(/[:=;/\\.,\s]/g, '').toLowerCase();
+  if (t && t.length >= 3) {
+    return `title:${t}`;
+  }
+  return '';
+}
+
+export function buildAllCopyNumbersMap(
+  records: Marc21Record[] = [],
+  libraryBooks: any[] = []
+): Map<string, { copyNumber: number; totalCopies: number }> {
+  const result = new Map<string, { copyNumber: number; totalCopies: number }>();
+  if (!records || records.length === 0) return result;
+
+  const getAccNum = (acc?: string): number => {
+    if (!acc) return 0;
+    const digits = String(acc).replace(/[^0-9]/g, '');
+    return digits ? parseInt(digits, 10) : 0;
+  };
+
+  type CopyEntry = { id: string; accNo: string; num: number; date?: string; recordId?: string };
+  const groupMap = new Map<string, Map<string, CopyEntry>>();
+
+  // 1. Group records in single O(N) pass
+  records.forEach(r => {
+    const groupKey = getBookCopyGroupKey(r) || `rec_single_${r.id}`;
+    if (!groupMap.has(groupKey)) {
+      groupMap.set(groupKey, new Map());
+    }
+    const bucket = groupMap.get(groupKey)!;
+    const rawAcc = r.accession_no || r.id;
+    const formatted = formatAccessionNo(rawAcc);
+    const key = formatted || r.id;
+    bucket.set(key, {
+      id: r.id,
+      accNo: formatted || r.accession_no || '',
+      num: getAccNum(r.accession_no),
+      date: r.date || '',
+      recordId: r.id
+    });
+  });
+
+  // 2. Add libraryBooks to matching groups in single O(N) pass
+  if (Array.isArray(libraryBooks) && libraryBooks.length > 0) {
+    libraryBooks.forEach(b => {
+      const groupKey = getBookCopyGroupKey(b);
+      if (groupKey && groupMap.has(groupKey)) {
+        const bucket = groupMap.get(groupKey)!;
+        if (Array.isArray(b.copies_list) && b.copies_list.length > 0) {
+          b.copies_list.forEach((c: any) => {
+            const rawAcc = c.accession_no || c.barcode || c.id || '';
+            const formatted = formatAccessionNo(rawAcc);
+            const key = formatted || (c.id || b.id);
+            if (!bucket.has(key)) {
+              bucket.set(key, {
+                id: c.id || b.id,
+                accNo: formatted || rawAcc,
+                num: getAccNum(rawAcc),
+                date: c.created_at || b.created_at || ''
+              });
+            }
+          });
+        } else {
+          const rawAcc = b.accession_no || b.barcode || b.id || '';
+          const formatted = formatAccessionNo(rawAcc);
+          const key = formatted || b.id;
+          if (!bucket.has(key)) {
+            bucket.set(key, {
+              id: b.id,
+              accNo: formatted || rawAcc,
+              num: getAccNum(rawAcc),
+              date: b.created_at || ''
+            });
+          }
+        }
+      }
+    });
+  }
+
+  // 3. For each group, sort once and assign copyNumber & totalCopies
+  groupMap.forEach(bucket => {
+    const sortedCopies = Array.from(bucket.values()).sort((a, b) => {
+      if (a.num > 0 && b.num > 0 && a.num !== b.num) return a.num - b.num;
+      if (a.date && b.date && a.date !== b.date) return a.date.localeCompare(b.date);
+      return (a.accNo || '').localeCompare(b.accNo || '');
+    });
+    const totalCopies = Math.max(sortedCopies.length, 1);
+
+    sortedCopies.forEach((item, idx) => {
+      if (item.recordId) {
+        result.set(item.recordId, { copyNumber: idx + 1, totalCopies });
+      }
+    });
+  });
+
+  // Ensure any records missing get safe default
+  records.forEach(r => {
+    if (!result.has(r.id)) {
+      result.set(r.id, { copyNumber: 1, totalCopies: 1 });
+    }
+  });
+
+  return result;
+}
+
+export const TOP_POPULAR_SUBJECTS = [
+  'ทั่วไป',
+  'วรรณกรรมสำหรับเด็ก',
+  'การ์ตูนความรู้',
+  'จิตวิทยา',
+  'การเงินส่วนบุคคล'
+];
+
 interface Marc21GeneratorProps {
   libraryBooks?: any[];
   onBookAddedToLibrary?: () => void;
@@ -1727,13 +1851,9 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
     return Array.from(set).filter(Boolean);
   }, [records]);
 
-  // Dynamic Copy Number calculation for every record in the table based on 020 ISBN or 022 ISSN
+  // Dynamic Copy Number calculation for every record in the table based on 020 ISBN or 022 ISSN (O(N) optimized)
   const recordCopyNumberMap = React.useMemo(() => {
-    const map = new Map<string, { copyNumber: number; totalCopies: number }>();
-    records.forEach(r => {
-      map.set(r.id, calculateCopyNumber(r, records, libraryBooks));
-    });
-    return map;
+    return buildAllCopyNumbersMap(records, libraryBooks);
   }, [records, libraryBooks]);
 
   // Dynamic suggestions for 700 translators / co-authors / contributors
@@ -2198,15 +2318,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
         if (data && data.length > 0) {
           allData = allData.concat(data);
 
-          // Progressive rendering so user sees records immediately while remaining pages load
-          const formattedCurrent: Marc21Record[] = allData.map((d: any) => ({
-            ...d,
-            marc_tags: Array.isArray(d.marc_tags)
-              ? d.marc_tags
-              : (typeof d.marc_tags === 'string' ? JSON.parse(d.marc_tags) : [])
-          }));
-
-          setRecords(formattedCurrent);
+          setStatusMessage(`กำลังดาวน์โหลดข้อมูลบรรณานุกรมจาก Supabase Cloud... (${allData.length.toLocaleString()} รายการ)`);
           setHasCloudTable(true);
           setHasRlsError(false);
 
@@ -4793,6 +4905,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
               ) : (
                 paginatedRecords.map((r, rowIdx) => {
                   const isSelected = selectedIds.has(r.id);
+                  const { subjects: rowExtractedSubs } = extractAllSubjectsAndDdc(r);
+                  const rowUniqueSubs = Array.from(new Set(rowExtractedSubs.filter(s => Boolean(s && s !== '-'))));
                   return (
                     <tr 
                       key={r.id} 
@@ -4938,8 +5052,6 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                         const propKey = isFirst ? 'subject_650a' : `subject_650_${subIdx}`;
                         const rawVal = (r as any)[propKey];
 
-                        const { subjects: rowExtractedSubs } = extractAllSubjectsAndDdc(r);
-
                         let currentVal = '-';
                         if (isFirst) {
                           currentVal = (rawVal && rawVal !== '-') ? rawVal : (rowExtractedSubs[0] || 'ทั่วไป');
@@ -4953,15 +5065,15 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
 
                         const hasValue = Boolean(currentVal && currentVal !== '-');
 
-                        // Collect unique options for this row
+                        // Compact options list for ultra-fast rendering
                         const availableOptions = Array.from(new Set([
-                          ...rowExtractedSubs,
+                          ...rowUniqueSubs,
                           hasValue ? currentVal : '',
                           ...(isFirst ? ['ทั่วไป'] : [])
                         ].filter((s): s is string => Boolean(s && s !== '-'))));
 
                         return (
-                          <td key={`row650_${r.id}_${subIdx}`} className="p-1.5 min-w-[190px]">
+                          <td key={`row650_${r.id}_${subIdx}`} className="p-1.5 min-w-[180px]">
                             <div className="relative">
                               <select
                                 value={currentVal}
@@ -4981,7 +5093,7 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                                     🏷️ {s}
                                   </option>
                                 ))}
-                                {DEFAULT_SUBJECT_HEADINGS.filter(ds => !availableOptions.includes(ds)).slice(0, 15).map((s, sIdx) => (
+                                {TOP_POPULAR_SUBJECTS.filter(ds => !availableOptions.includes(ds)).slice(0, 3).map((s, sIdx) => (
                                   <option key={`defopt_${r.id}_${subIdx}_${sIdx}`} value={s}>
                                     🏷️ {s}
                                   </option>
@@ -5205,8 +5317,8 @@ export const Marc21Generator: React.FC<Marc21GeneratorProps> = ({ libraryBooks =
                   }}
                   className="bg-transparent font-bold text-slate-800 text-xs focus:outline-none cursor-pointer"
                 >
-                  <option value={50}>50 แถว (ค่าเริ่มต้น)</option>
-                  <option value={100}>100 แถว</option>
+                  <option value={50}>50 แถว (ค่าเริ่มต้น - แนะนำ ลื่นไหลสุด)</option>
+                  <option value={100}>100 แถว (แนะนำ)</option>
                   <option value={200}>200 แถว</option>
                   <option value={500}>500 แถว</option>
                   <option value={records.length > 0 ? records.length : 1000}>ทั้งหมด ({records.length} แถว)</option>
